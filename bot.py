@@ -43,6 +43,10 @@ DB_FILE = "newsbot.db"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NICHES = {
+    "pets": {
+        "label": "🐾 Pets & Animals",
+        "query": "pets animals wildlife rescue veterinary latest news"
+    },
     "ai": {
         "label": "🤖 AI & Technology",
         "query": "artificial intelligence machine learning latest news"
@@ -86,6 +90,10 @@ NICHES = {
     "entertainment": {
         "label": "🎬 Entertainment",
         "query": "movies Netflix celebrity latest news"
+    },
+    "environment": {
+        "label": "🌿 Environment",
+        "query": "climate change environment renewable energy latest news"
     },
 
     "cybersecurity": {
