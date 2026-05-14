@@ -1,7 +1,6 @@
-
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║       🤖  AI NEWS BOT  —  Render-Ready Version                 ║
-# ║  Includes Flask health endpoint so Render Free Tier works!     ║
+# ║  Fixed: Single Flask instance, proper port binding             ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import os
@@ -511,12 +510,9 @@ def health():
 def ping():
     return "pong", 200
 
-def run_health_server():
-    health_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  🚀  MAIN
+#  🚀  MAIN  —  FIXED: Only ONE Flask instance, bot in background
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if __name__ == "__main__":
@@ -524,18 +520,12 @@ if __name__ == "__main__":
     print("  🤖  AI News Bot — Starting on Render…")
     print("━" * 48)
 
-    # ── Everything EXCEPT Flask runs in a background thread ──────────
-    # Flask MUST be the first thing that binds to a port so Render
-    # doesn't time out while waiting for an open port.
-    def background_startup():
-        import time as _t
-        _t.sleep(1)                    # tiny pause — let Flask bind first
+    # 1. Initialize DB first (before threads)
+    init_db()
+    print("✅ Database initialised")
 
-        # 1. DB
-        init_db()
-        print("✅ Database initialised")
-
-        # 2. Scheduler
+    # 2. Start bot polling in a BACKGROUND thread
+    def run_bot():
         IST = pytz.timezone(TIMEZONE)
         sched = BackgroundScheduler(timezone=IST)
         sched.add_job(
@@ -546,7 +536,7 @@ if __name__ == "__main__":
         sched.start()
         print(f"✅ Scheduler: daily at {DAILY_HOUR:02d}:{DAILY_MINUTE:02d} IST")
 
-        # 3. Notify admin
+        # Notify admin
         try:
             bot.send_message(ADMIN_CHAT_ID,
                 "🟢 *AI News Bot is LIVE on Render!* 🎉\n\n"
@@ -560,16 +550,14 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Admin notify: {e}")
 
-        # 4. Start polling
+        # Start polling
         print("📱 Bot polling started…")
         bot.infinity_polling(timeout=30, long_polling_timeout=20)
 
-    # Kick off everything in the background
-    bg = threading.Thread(target=background_startup, daemon=True)
-    bg.start()
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
 
-    # ── Flask on MAIN THREAD — opens port IMMEDIATELY ✅ ─────────────
-    # Render scans the main thread for an open port.
-    # Flask binds here before any bot code runs → no more timeout.
+    # 3. Flask runs on the MAIN thread — binds to PORT immediately
+    # This is what Render detects. MUST be on main thread.
     print(f"🌐 Opening port {PORT} — Render will detect this now…")
     health_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
