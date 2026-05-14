@@ -43,62 +43,65 @@ DB_FILE = "newsbot.db"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NICHES = {
+
     "pets": {
         "label": "🐾 Pets & Animals",
-        "query": "pets animals wildlife rescue veterinary latest news"
+        "query": "pets animals wildlife rescue veterinary latest news when:2d"
     },
+
     "ai": {
         "label": "🤖 AI & Technology",
-        "query": "artificial intelligence machine learning latest news"
+        "query": "artificial intelligence machine learning latest news when:2d"
     },
 
     "finance": {
         "label": "💰 Finance & Markets",
-        "query": "finance stock market latest news"
+        "query": "finance stock market latest news when:2d"
     },
 
     "sports": {
         "label": "⚽ Sports",
-        "query": "sports football cricket latest news"
+        "query": "sports football cricket latest news when:2d"
     },
 
     "health": {
         "label": "🏥 Health & Medicine",
-        "query": "health medicine latest news"
+        "query": "health medicine latest news when:2d"
     },
 
     "science": {
         "label": "🔬 Science & Space",
-        "query": "science NASA space latest news"
+        "query": "science NASA space latest news when:2d"
     },
 
     "business": {
         "label": "📈 Business & Startups",
-        "query": "business startup latest news"
+        "query": "business startup funding entrepreneurship latest news when:2d"
     },
 
     "world": {
         "label": "🌍 World News",
-        "query": "world breaking latest news"
+        "query": "world breaking latest news when:2d"
     },
 
     "india": {
         "label": "🇮🇳 India News",
-        "query": "India latest breaking news"
+        "query": "India latest breaking news when:2d"
     },
 
     "entertainment": {
         "label": "🎬 Entertainment",
-        "query": "movies Netflix celebrity latest news"
+        "query": "movies Netflix celebrity latest news when:2d"
     },
+
     "environment": {
         "label": "🌿 Environment",
-        "query": "climate change environment renewable energy latest news"
+        "query": "climate change environment renewable energy latest news when:2d"
     },
 
     "cybersecurity": {
         "label": "🔒 Cybersecurity",
-        "query": "cybersecurity hacking latest news"
+        "query": "cybersecurity hacking latest news when:2d"
     },
 }
 
@@ -432,8 +435,10 @@ def build_message(niche, stories):
     ).strftime("%B %d, %Y")
 
     msg = (
-        f"📰 *{cfg['label']}*\n"
-        f"📅 {today}\n\n"
+        f"📰 *{cfg['label'].upper()} DAILY BRIEFING*\n"
+        f"📅 {today}\n"
+        f"🤖 Curated by AI News Bot\n"
+        f"{'━'*28}\n\n"
     )
 
     for i, s in enumerate(stories):
@@ -448,9 +453,9 @@ def build_message(niche, stories):
         )
 
     msg += (
-        "━━━━━━━━━━━━━━\n"
-        "📰 /news\n"
-        "⚙️ /preferences"
+        f"{'━'*28}\n"
+        f"📰 /news   ⚙️ /preferences\n"
+        f"🤖 _Daily News at 8 AM IST_"
     )
 
     return msg[:4096]
@@ -526,8 +531,12 @@ def start(message):
     bot.send_message(
         cid,
         (
-            f"👋 *Welcome {escape_markdown(fname)}*\n\n"
-            f"Choose your news category 👇"
+            f"👋 *Welcome, {escape_markdown(fname)}!*\n\n"
+            f"I'm your *AI Personalized News Bot* 🤖\n\n"
+            f"📰 Get the latest AI-curated news\n"
+            f"every day at *8:00 AM IST*\n\n"
+            f"{'━'*28}\n"
+            f"👇 *Choose your news category:*"
         ),
         reply_markup=niche_keyboard()
     )
@@ -598,8 +607,10 @@ def callbacks(call):
 
         bot.edit_message_text(
             (
-                f"✅ Selected: *{cfg['label']}*\n\n"
-                f"📡 Fetching latest news..."
+                f"✅ *Category Selected*\n\n"
+                f"📰 {cfg['label']}\n"
+                f"⏰ Daily delivery: *8:00 AM IST*\n\n"
+                f"📡 Fetching your latest briefing..."
             ),
             cid,
             call.message.message_id,
