@@ -147,9 +147,16 @@ def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
 def fetch_news(niche: str, num: int = 10) -> list:
-    cfg   = NICHES.get(niche, NICHES["world"])
-    query = cfg["query"].replace(" ", "+")
-    url   = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+    cfg = NICHES.get(niche, NICHES["world"])
+
+query = (cfg["query"] + " when:2d").replace(" ", "+")
+
+url = (
+    f"https://news.google.com/rss/search?"
+    f"q={query}"
+    f"&hl=en-IN&gl=IN&ceid=IN:en"
+    f"&sort=date"
+)
     try:
         feed    = feedparser.parse(url)
         stories = []
