@@ -1,6 +1,6 @@
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║                🤖 AI NEWS BOT — FINAL STABLE VERSION           ║
-# ║            Render + Telegram + Google News RSS                ║
+# ║                🤖 AI NEWS BOT — STABLE FINAL VERSION           ║
+# ║         Telegram + Render + Flask + Google News RSS           ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import os
@@ -25,7 +25,7 @@ from apscheduler.triggers.cron import CronTrigger
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable missing!")
+    raise ValueError("BOT_TOKEN environment variable missing!")
 
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "940928434"))
 
@@ -39,68 +39,58 @@ DAILY_MINUTE = 0
 DB_FILE = "newsbot.db"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 NEWS NICHES
+# 📰 NEWS CATEGORIES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NICHES = {
-    "pets": {
-        "label": "🐾 Pets & Animals",
-        "query": "pets animals wildlife rescue veterinary"
-    },
-
     "ai": {
         "label": "🤖 AI & Technology",
-        "query": "artificial intelligence machine learning technology"
+        "query": "artificial intelligence machine learning latest news"
     },
 
     "finance": {
         "label": "💰 Finance & Markets",
-        "query": "stock market finance economy cryptocurrency"
+        "query": "finance stock market latest news"
     },
 
     "sports": {
         "label": "⚽ Sports",
-        "query": "sports football cricket tennis Olympics"
-    },
-
-    "cybersecurity": {
-        "label": "🔒 Cybersecurity",
-        "query": "cybersecurity hacking data breach ransomware"
-    },
-
-    "environment": {
-        "label": "🌿 Environment",
-        "query": "climate change environment renewable energy"
+        "query": "sports football cricket latest news"
     },
 
     "health": {
         "label": "🏥 Health & Medicine",
-        "query": "health medicine FDA drug approval research"
-    },
-
-    "entertainment": {
-        "label": "🎬 Entertainment",
-        "query": "movies music entertainment Hollywood Netflix"
-    },
-
-    "world": {
-        "label": "🌍 World News",
-        "query": "world news international breaking news today"
+        "query": "health medicine latest news"
     },
 
     "science": {
         "label": "🔬 Science & Space",
-        "query": "science space NASA physics biology discovery"
-    },
-
-    "india": {
-        "label": "🇮🇳 India News",
-        "query": "India news today politics economy society"
+        "query": "science NASA space latest news"
     },
 
     "business": {
         "label": "📈 Business & Startups",
-        "query": "business startup funding entrepreneurship"
+        "query": "business startup latest news"
+    },
+
+    "world": {
+        "label": "🌍 World News",
+        "query": "world breaking latest news"
+    },
+
+    "india": {
+        "label": "🇮🇳 India News",
+        "query": "India latest breaking news"
+    },
+
+    "entertainment": {
+        "label": "🎬 Entertainment",
+        "query": "movies Netflix celebrity latest news"
+    },
+
+    "cybersecurity": {
+        "label": "🔒 Cybersecurity",
+        "query": "cybersecurity hacking latest news"
     },
 }
 
@@ -109,141 +99,144 @@ NICHES = {
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+
+    conn = sqlite3.connect(
+        DB_FILE,
+        check_same_thread=False
+    )
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
 def init_db():
 
-    c = get_db()
+    db = get_db()
 
-    c.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            chat_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            niche TEXT DEFAULT 'world',
-            is_active INTEGER DEFAULT 1,
-            joined_at TEXT DEFAULT (datetime('now'))
-        );
+    db.executescript("""
 
-        CREATE TABLE IF NOT EXISTS news_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            niche TEXT,
-            story_count INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'sent',
-            sent_at TEXT DEFAULT (datetime('now'))
-        );
+    CREATE TABLE IF NOT EXISTS users (
+        chat_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        niche TEXT DEFAULT 'world',
+        is_active INTEGER DEFAULT 1,
+        joined_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS news_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        niche TEXT,
+        story_count INTEGER,
+        status TEXT,
+        sent_at TEXT DEFAULT (datetime('now'))
+    );
+
     """)
 
-    c.commit()
-    c.close()
+    db.commit()
+
+    db.close()
 
 
 def upsert_user(chat_id, username=None, first_name=None, last_name=None):
 
-    c = get_db()
+    db = get_db()
 
-    if not c.execute(
-        "SELECT 1 FROM users WHERE chat_id=?",
+    existing = db.execute(
+        "SELECT * FROM users WHERE chat_id=?",
         (chat_id,)
-    ).fetchone():
+    ).fetchone()
 
-        c.execute(
+    if not existing:
+
+        db.execute(
             """
             INSERT INTO users
             (chat_id, username, first_name, last_name)
             VALUES (?, ?, ?, ?)
             """,
-            (chat_id, username, first_name, last_name)
+            (
+                chat_id,
+                username,
+                first_name,
+                last_name
+            )
         )
 
-        c.commit()
+        db.commit()
 
-    c.close()
-
-
-def get_user(chat_id):
-
-    c = get_db()
-
-    row = c.execute(
-        "SELECT * FROM users WHERE chat_id=?",
-        (chat_id,)
-    ).fetchone()
-
-    c.close()
-
-    return dict(row) if row else None
+    db.close()
 
 
 def set_niche(chat_id, niche):
 
-    c = get_db()
+    db = get_db()
 
-    c.execute(
+    db.execute(
         "UPDATE users SET niche=? WHERE chat_id=?",
         (niche, chat_id)
     )
 
-    c.commit()
-    c.close()
+    db.commit()
+
+    db.close()
+
+
+def get_user(chat_id):
+
+    db = get_db()
+
+    row = db.execute(
+        "SELECT * FROM users WHERE chat_id=?",
+        (chat_id,)
+    ).fetchone()
+
+    db.close()
+
+    return dict(row) if row else None
 
 
 def get_all_active():
 
-    c = get_db()
+    db = get_db()
 
-    rows = c.execute(
+    rows = db.execute(
         "SELECT * FROM users WHERE is_active=1"
     ).fetchall()
 
-    c.close()
+    db.close()
 
     return [dict(r) for r in rows]
 
 
 def log_delivery(chat_id, niche, count, status="sent"):
 
-    c = get_db()
+    db = get_db()
 
-    c.execute(
+    db.execute(
         """
         INSERT INTO news_log
         (chat_id, niche, story_count, status)
         VALUES (?, ?, ?, ?)
         """,
-        (chat_id, niche, count, status)
+        (
+            chat_id,
+            niche,
+            count,
+            status
+        )
     )
 
-    c.commit()
-    c.close()
+    db.commit()
 
-
-def get_stats():
-
-    c = get_db()
-
-    total = c.execute(
-        "SELECT COUNT(*) FROM users"
-    ).fetchone()[0]
-
-    deliveries = c.execute(
-        "SELECT COUNT(*) FROM news_log"
-    ).fetchone()[0]
-
-    c.close()
-
-    return {
-        "total": total,
-        "deliveries": deliveries
-    }
+    db.close()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 NEWS FETCHER
+# 🧹 CLEANERS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def clean(text):
@@ -255,7 +248,9 @@ def clean(text):
 
     text = re.sub(r"<[^>]+>", "", text)
 
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
 
 
 def escape_markdown(text):
@@ -270,23 +265,30 @@ def escape_markdown(text):
         for c in text
     )
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 📰 NEWS FETCHER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def fetch_news(niche: str, num: int = 10):
+def fetch_news(niche="world", num=10):
 
-    cfg = NICHES.get(niche, NICHES["world"])
+    cfg = NICHES.get(
+        niche,
+        NICHES["world"]
+    )
 
-    query = (cfg["query"] + " when:2d").replace(" ", "+")
+    query = cfg["query"].replace(" ", "+")
 
     url = (
-        f"https://news.google.com/rss/search?"
+        "https://news.google.com/rss/search?"
         f"q={query}"
-        f"&hl=en-IN"
-        f"&gl=IN"
-        f"&ceid=IN:en"
-        f"&sort=date"
+        "&hl=en-IN"
+        "&gl=IN"
+        "&ceid=IN:en"
     )
 
     try:
+
+        print(f"Fetching news: {url}")
 
         feed = feedparser.parse(url)
 
@@ -294,23 +296,24 @@ def fetch_news(niche: str, num: int = 10):
 
         seen = set()
 
-        for e in feed.entries[:num * 4]:
+        for e in feed.entries[:num * 3]:
 
-            title = escape_markdown(
-                clean(e.get("title", ""))
+            title = clean(
+                e.get("title", "")
             )
 
-            summary = escape_markdown(
-                clean(e.get("summary", ""))[:250]
-            )
+            summary = clean(
+                e.get("summary", "")
+            )[:220]
 
-            source = escape_markdown(
-                e.get("source", {}).get("title", "Google News")
+            source = clean(
+                e.get("source", {}).get(
+                    "title",
+                    "Google News"
+                )
             )
 
             link = e.get("link", "")
-
-            pub = e.get("published", "")[:16]
 
             if not title:
                 continue
@@ -326,30 +329,29 @@ def fetch_news(niche: str, num: int = 10):
 
             seen.add(normalized)
 
-            if " - " in title:
+            title = escape_markdown(title)
 
-                parts = title.rsplit(" - ", 1)
+            summary = escape_markdown(summary)
 
-                title = parts[0].strip()
-
-                source = parts[1].strip()
+            source = escape_markdown(source)
 
             stories.append({
-                "title": title[:110],
+                "title": title,
                 "summary": summary,
+                "source": source,
                 "link": link,
-                "source": source[:50],
-                "date": pub,
             })
 
             if len(stories) >= num:
                 break
 
+        print(f"Fetched {len(stories)} stories")
+
         return stories
 
     except Exception as e:
 
-        print(f"[fetch_news ERROR] {e}")
+        print(f"[FETCH ERROR] {e}")
 
         return []
 
@@ -366,39 +368,43 @@ try:
 
     me = bot.get_me()
 
-    print(f"✅ Connected to Telegram bot: @{me.username}")
+    print(f"Connected to bot: @{me.username}")
 
 except Exception as e:
 
-    print(f"❌ Telegram connection failed: {e}")
+    print(f"[BOT ERROR] {e}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🔘 KEYBOARDS
+# 🔘 KEYBOARD
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def niche_kb():
+def niche_keyboard():
 
-    m = telebot.types.InlineKeyboardMarkup(row_width=2)
+    markup = telebot.types.InlineKeyboardMarkup(
+        row_width=2
+    )
 
     buttons = []
 
-    for k, cfg in NICHES.items():
+    for key, cfg in NICHES.items():
 
         buttons.append(
+
             telebot.types.InlineKeyboardButton(
                 cfg["label"],
-                callback_data=f"niche:{k}"
+                callback_data=f"niche:{key}"
             )
+
         )
 
     for i in range(0, len(buttons), 2):
 
-        m.add(*buttons[i:i+2])
+        markup.add(*buttons[i:i+2])
 
-    return m
+    return markup
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 FORMATTER
+# 📰 FORMAT NEWS MESSAGE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NUMS = [
@@ -406,10 +412,12 @@ NUMS = [
     "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"
 ]
 
+def build_message(niche, stories):
 
-def format_news(niche, stories, fname="Friend"):
-
-    cfg = NICHES.get(niche, {"label": "News"})
+    cfg = NICHES.get(
+        niche,
+        NICHES["world"]
+    )
 
     today = datetime.now(
         pytz.timezone(TIMEZONE)
@@ -422,7 +430,7 @@ def format_news(niche, stories, fname="Friend"):
 
     for i, s in enumerate(stories):
 
-        n = NUMS[i] if i < len(NUMS) else f"{i+1}."
+        n = NUMS[i]
 
         msg += (
             f"{n} *{s['title']}*\n"
@@ -433,8 +441,8 @@ def format_news(niche, stories, fname="Friend"):
 
     msg += (
         "━━━━━━━━━━━━━━\n"
-        "⚙️ /preferences\n"
-        "📰 /news"
+        "📰 /news\n"
+        "⚙️ /preferences"
     )
 
     return msg[:4096]
@@ -443,7 +451,7 @@ def format_news(niche, stories, fname="Friend"):
 # 📤 SEND NEWS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def send_news(chat_id, niche, fname="Friend"):
+def send_news(chat_id, niche):
 
     try:
 
@@ -453,35 +461,41 @@ def send_news(chat_id, niche, fname="Friend"):
 
             bot.send_message(
                 chat_id,
-                "⚠️ No recent news available."
+                "⚠️ No news found right now."
             )
-
-            log_delivery(chat_id, niche, 0, "failed")
 
             return
 
-        msg = format_news(
+        message = build_message(
             niche,
-            stories,
-            fname
+            stories
         )
 
         bot.send_message(
             chat_id,
-            msg,
+            message,
             disable_web_page_preview=True
         )
 
         log_delivery(
             chat_id,
             niche,
-            len(stories),
-            "sent"
+            len(stories)
         )
 
     except Exception as e:
 
-        print(f"[send_news ERROR] {e}")
+        print(f"[SEND ERROR] {e}")
+
+        try:
+
+            bot.send_message(
+                chat_id,
+                "⚠️ Failed to send news."
+            )
+
+        except:
+            pass
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 📩 COMMANDS
@@ -504,10 +518,10 @@ def start(message):
     bot.send_message(
         cid,
         (
-            f"👋 *Welcome {escape_markdown(fname)}!*\n\n"
+            f"👋 *Welcome {escape_markdown(fname)}*\n\n"
             f"Choose your news category 👇"
         ),
-        reply_markup=niche_kb()
+        reply_markup=niche_keyboard()
     )
 
 
@@ -524,7 +538,10 @@ def news(message):
 
         return
 
-    niche = user.get("niche", "world")
+    niche = user.get(
+        "niche",
+        "world"
+    )
 
     bot.send_message(
         cid,
@@ -539,14 +556,17 @@ def news(message):
 
 
 @bot.message_handler(commands=["preferences"])
-def prefs(message):
+def preferences(message):
 
     bot.send_message(
         message.chat.id,
-        "⚙️ Choose a new category:",
-        reply_markup=niche_kb()
+        "⚙️ Choose your category:",
+        reply_markup=niche_keyboard()
     )
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🔘 CALLBACKS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(call):
@@ -555,20 +575,34 @@ def callbacks(call):
 
     data = call.data
 
+    bot.answer_callback_query(call.id)
+
     if data.startswith("niche:"):
 
         niche = data.split(":")[1]
 
         set_niche(cid, niche)
 
-        cfg = NICHES.get(niche)
+        cfg = NICHES.get(
+            niche,
+            NICHES["world"]
+        )
 
         bot.edit_message_text(
-            f"✅ Selected: *{cfg['label']}*",
+            (
+                f"✅ Selected: *{cfg['label']}*\n\n"
+                f"📡 Fetching latest news..."
+            ),
             cid,
             call.message.message_id,
             parse_mode="Markdown"
         )
+
+        threading.Thread(
+            target=send_news,
+            args=(cid, niche),
+            daemon=True
+        ).start()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ⏰ DAILY BROADCAST
@@ -578,7 +612,7 @@ def daily_broadcast():
 
     users = get_all_active()
 
-    print(f"📬 Broadcasting to {len(users)} users")
+    print(f"Broadcasting to {len(users)} users")
 
     for u in users:
 
@@ -586,18 +620,17 @@ def daily_broadcast():
 
             send_news(
                 u["chat_id"],
-                u.get("niche", "world"),
-                u.get("first_name", "Friend")
+                u.get("niche", "world")
             )
 
             time.sleep(1)
 
         except Exception as e:
 
-            print(f"[Broadcast ERROR] {e}")
+            print(f"[BROADCAST ERROR] {e}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🌐 FLASK HEALTH SERVER
+# 🌐 FLASK SERVER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 app = Flask(__name__)
@@ -605,14 +638,10 @@ app = Flask(__name__)
 @app.route("/")
 def home():
 
-    s = get_stats()
-
     return (
-        f"<h2>🤖 AI News Bot Running</h2>"
-        f"<p>Users: {s['total']}</p>"
-        f"<p>Deliveries: {s['deliveries']}</p>"
+        "<h2>🤖 AI News Bot Running</h2>"
+        "<p>Telegram bot is active.</p>"
     )
-
 
 @app.route("/ping")
 def ping():
@@ -625,11 +654,11 @@ def ping():
 
 if __name__ == "__main__":
 
-    print("🤖 Starting AI News Bot...")
+    print("Starting AI News Bot...")
 
     init_db()
 
-    print("✅ Database initialized")
+    print("Database initialized")
 
     def run_bot():
 
@@ -650,24 +679,24 @@ if __name__ == "__main__":
 
         scheduler.start()
 
-        print("✅ Scheduler started")
+        print("Scheduler started")
 
         try:
 
             bot.send_message(
                 ADMIN_CHAT_ID,
-                "🟢 AI News Bot is LIVE!"
+                "🟢 AI News Bot is LIVE on Render!"
             )
 
         except Exception as e:
 
-            print(f"[Admin Notify ERROR] {e}")
+            print(f"[ADMIN ERROR] {e}")
 
         while True:
 
             try:
 
-                print("📱 Polling started...")
+                print("Polling started...")
 
                 bot.infinity_polling(
                     timeout=30,
@@ -685,7 +714,7 @@ if __name__ == "__main__":
         daemon=True
     ).start()
 
-    print(f"🌐 Flask running on port {PORT}")
+    print(f"Opening Flask port {PORT}")
 
     app.run(
         host="0.0.0.0",
