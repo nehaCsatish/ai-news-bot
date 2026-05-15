@@ -1,109 +1,81 @@
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║                🤖 AI NEWS BOT — STABLE FINAL VERSION           ║
-# ║         Telegram + Render + Flask + Google News RSS           ║
+# ║              🐾 PET INDUSTRY AI NEWS BOT — PRO                 ║
+# ║      Telegram + Render + Flask + APScheduler + SQLite         ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 import os
 import re
 import html
 import time
+import logging
 import threading
 import sqlite3
+from datetime import datetime
+
 import feedparser
 import pytz
 import telebot
 
 from flask import Flask
-from datetime import datetime
+from telebot import types
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ⚙️ CONFIG
+# ⚙️ ENVIRONMENT VARIABLES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable missing!")
+    raise ValueError("❌ BOT_TOKEN environment variable missing!")
 
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "940928434"))
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 
 PORT = int(os.getenv("PORT", 10000))
 
-TIMEZONE = "Asia/Kolkata"
+DEFAULT_TIMEZONE = os.getenv(
+    "DEFAULT_TIMEZONE",
+    "Asia/Kolkata"
+)
 
-DAILY_HOUR = 8
-DAILY_MINUTE = 0
-
-DB_FILE = "newsbot.db"
+DB_FILE = "petnewsbot.db"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 NEWS CATEGORIES
+# 🪵 LOGGING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-NICHES = {
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
-    "pets": {
-        "label": "🐾 Pets & Animals",
-        "query": "pets animals wildlife rescue veterinary latest news when:2d"
-    },
+logger = logging.getLogger("PetNewsBot")
 
-    "ai": {
-        "label": "🤖 AI & Technology",
-        "query": "artificial intelligence machine learning latest news when:2d"
-    },
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🤖 TELEGRAM BOT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    "finance": {
-        "label": "💰 Finance & Markets",
-        "query": "finance stock market latest news when:2d"
-    },
+bot = telebot.TeleBot(
+    BOT_TOKEN,
+    parse_mode="Markdown"
+)
 
-    "sports": {
-        "label": "⚽ Sports",
-        "query": "sports football cricket latest news when:2d"
-    },
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🌐 FLASK APP
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    "health": {
-        "label": "🏥 Health & Medicine",
-        "query": "health medicine latest news when:2d"
-    },
+app = Flask(__name__)
 
-    "science": {
-        "label": "🔬 Science & Space",
-        "query": "science NASA space latest news when:2d"
-    },
+@app.route("/")
+def home():
+    return (
+        "<h2>🐾 Pet Industry AI News Bot Running</h2>"
+        "<p>Telegram bot is active.</p>"
+    )
 
-    "business": {
-        "label": "📈 Business & Startups",
-        "query": "business startup funding entrepreneurship latest news when:2d"
-    },
-
-    "world": {
-        "label": "🌍 World News",
-        "query": "world breaking latest news when:2d"
-    },
-
-    "india": {
-        "label": "🇮🇳 India News",
-        "query": "India latest breaking news when:2d"
-    },
-
-    "entertainment": {
-        "label": "🎬 Entertainment",
-        "query": "movies Netflix celebrity latest news when:2d"
-    },
-
-    "environment": {
-        "label": "🌿 Environment",
-        "query": "climate change environment renewable energy latest news when:2d"
-    },
-
-    "cybersecurity": {
-        "label": "🔒 Cybersecurity",
-        "query": "cybersecurity hacking latest news when:2d"
-    },
-}
+@app.route("/ping")
+def ping():
+    return "pong", 200
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🗄️ DATABASE
@@ -128,72 +100,69 @@ def init_db():
     db.executescript("""
 
     CREATE TABLE IF NOT EXISTS users (
+
         chat_id INTEGER PRIMARY KEY,
+
         username TEXT,
         first_name TEXT,
         last_name TEXT,
-        niche TEXT DEFAULT 'world',
-        is_active INTEGER DEFAULT 1,
-        joined_at TEXT DEFAULT (datetime('now'))
+
+        timezone TEXT DEFAULT 'Asia/Kolkata',
+
+        delivery_time TEXT DEFAULT '08:00',
+
+        is_subscribed INTEGER DEFAULT 1,
+
+        joined_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
-    CREATE TABLE IF NOT EXISTS news_log (
+    CREATE TABLE IF NOT EXISTS sent_news (
+
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+
         chat_id INTEGER,
-        niche TEXT,
-        story_count INTEGER,
-        status TEXT,
-        sent_at TEXT DEFAULT (datetime('now'))
+
+        news_hash TEXT,
+
+        sent_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
     """)
 
     db.commit()
-
     db.close()
 
-
-def upsert_user(chat_id, username=None, first_name=None, last_name=None):
-
-    db = get_db()
-
-    existing = db.execute(
-        "SELECT * FROM users WHERE chat_id=?",
-        (chat_id,)
-    ).fetchone()
-
-    if not existing:
-
-        db.execute(
-            """
-            INSERT INTO users
-            (chat_id, username, first_name, last_name)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                chat_id,
-                username,
-                first_name,
-                last_name
-            )
-        )
-
-        db.commit()
-
-    db.close()
+    logger.info("✅ Database initialized")
 
 
-def set_niche(chat_id, niche):
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 👤 USER FUNCTIONS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def add_user(chat):
 
     db = get_db()
 
     db.execute(
-        "UPDATE users SET niche=? WHERE chat_id=?",
-        (niche, chat_id)
+        """
+        INSERT OR IGNORE INTO users
+        (
+            chat_id,
+            username,
+            first_name,
+            last_name
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            chat.id,
+            chat.username,
+            chat.first_name,
+            chat.last_name
+        )
     )
 
     db.commit()
-
     db.close()
 
 
@@ -211,12 +180,15 @@ def get_user(chat_id):
     return dict(row) if row else None
 
 
-def get_all_active():
+def get_all_users():
 
     db = get_db()
 
     rows = db.execute(
-        "SELECT * FROM users WHERE is_active=1"
+        """
+        SELECT * FROM users
+        WHERE is_subscribed=1
+        """
     ).fetchall()
 
     db.close()
@@ -224,30 +196,46 @@ def get_all_active():
     return [dict(r) for r in rows]
 
 
-def log_delivery(chat_id, niche, count, status="sent"):
+def set_user_time(chat_id, delivery_time):
 
     db = get_db()
 
     db.execute(
         """
-        INSERT INTO news_log
-        (chat_id, niche, story_count, status)
-        VALUES (?, ?, ?, ?)
+        UPDATE users
+        SET delivery_time=?,
+            is_subscribed=1
+        WHERE chat_id=?
         """,
         (
-            chat_id,
-            niche,
-            count,
-            status
+            delivery_time,
+            chat_id
         )
     )
 
     db.commit()
-
     db.close()
 
+
+def unsubscribe_user(chat_id):
+
+    db = get_db()
+
+    db.execute(
+        """
+        UPDATE users
+        SET is_subscribed=0
+        WHERE chat_id=?
+        """,
+        (chat_id,)
+    )
+
+    db.commit()
+    db.close()
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🧹 CLEANERS
+# 🧹 TEXT CLEANERS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def clean(text):
@@ -276,18 +264,19 @@ def escape_markdown(text):
         for c in text
     )
 
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 NEWS FETCHER
+# 📰 PET INDUSTRY NEWS FETCHER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def fetch_news(niche="world", num=10):
+NEWS_QUERY = """
+pet industry OR pet care OR veterinary OR pet food
+OR animal startup OR pet technology latest news when:2d
+"""
 
-    cfg = NICHES.get(
-        niche,
-        NICHES["world"]
-    )
+def fetch_pet_news(limit=5):
 
-    query = cfg["query"].replace(" ", "+")
+    query = NEWS_QUERY.strip().replace(" ", "+")
 
     url = (
         "https://news.google.com/rss/search?"
@@ -297,9 +286,9 @@ def fetch_news(niche="world", num=10):
         "&ceid=IN:en"
     )
 
-    try:
+    logger.info(f"📡 Fetching news from Google RSS")
 
-        print(f"Fetching news: {url}")
+    try:
 
         feed = feedparser.parse(url)
 
@@ -307,24 +296,25 @@ def fetch_news(niche="world", num=10):
 
         seen = set()
 
-        for e in feed.entries[:num * 3]:
+        for entry in feed.entries:
 
-            title = clean(
-                e.get("title", "")
-            )
+            title = clean(entry.get("title", ""))
 
             summary = clean(
-                e.get("summary", "")
-            )[:220]
+                entry.get("summary", "")
+            )[:180]
 
             source = clean(
-                e.get("source", {}).get(
+                entry.get(
+                    "source",
+                    {}
+                ).get(
                     "title",
                     "Google News"
                 )
             )
 
-            link = e.get("link", "")
+            link = entry.get("link", "")
 
             if not title:
                 continue
@@ -340,149 +330,86 @@ def fetch_news(niche="world", num=10):
 
             seen.add(normalized)
 
-            title = escape_markdown(title)
-
-            summary = escape_markdown(summary)
-
-            source = escape_markdown(source)
-
             stories.append({
-                "title": title,
-                "summary": summary,
-                "source": source,
-                "link": link,
+                "title": escape_markdown(title),
+                "summary": escape_markdown(summary),
+                "source": escape_markdown(source),
+                "link": link
             })
 
-            if len(stories) >= num:
+            if len(stories) >= limit:
                 break
 
-        print(f"Fetched {len(stories)} stories")
+        logger.info(f"✅ Fetched {len(stories)} stories")
 
         return stories
 
     except Exception as e:
 
-        print(f"[FETCH ERROR] {e}")
+        logger.error(f"❌ News fetch failed: {e}")
 
         return []
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🤖 TELEGRAM BOT
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-bot = telebot.TeleBot(
-    BOT_TOKEN,
-    parse_mode="Markdown"
-)
-
-try:
-
-    me = bot.get_me()
-
-    print(f"Connected to bot: @{me.username}")
-
-except Exception as e:
-
-    print(f"[BOT ERROR] {e}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🔘 KEYBOARD
+# ✨ MESSAGE BUILDER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def niche_keyboard():
-
-    markup = telebot.types.InlineKeyboardMarkup(
-        row_width=2
-    )
-
-    buttons = []
-
-    for key, cfg in NICHES.items():
-
-        buttons.append(
-
-            telebot.types.InlineKeyboardButton(
-                cfg["label"],
-                callback_data=f"niche:{key}"
-            )
-
-        )
-
-    for i in range(0, len(buttons), 2):
-
-        markup.add(*buttons[i:i+2])
-
-    return markup
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 FORMAT NEWS MESSAGE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-NUMS = [
-    "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣",
-    "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"
+NUMBERS = [
+    "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"
 ]
 
-def build_message(niche, stories):
-
-    cfg = NICHES.get(
-        niche,
-        NICHES["world"]
-    )
+def build_news_message(stories):
 
     today = datetime.now(
-        pytz.timezone(TIMEZONE)
+        pytz.timezone(DEFAULT_TIMEZONE)
     ).strftime("%B %d, %Y")
 
-    msg = (
-        f"📰 *{cfg['label'].upper()} DAILY BRIEFING*\n"
+    message = (
+        f"🐾 *PET INDUSTRY DAILY BRIEFING*\n"
         f"📅 {today}\n"
-        f"🤖 Curated by AI News Bot\n"
-        f"{'━'*28}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
-    for i, s in enumerate(stories):
+    for i, story in enumerate(stories):
 
-        n = NUMS[i]
-
-        msg += (
-            f"{n} *{s['title']}*\n"
-            f"📍 {s['source']}\n"
-            f"📝 {s['summary']}\n"
-            f"🔗 {s['link']}\n\n"
+        message += (
+            f"{NUMBERS[i]} *{story['title']}*\n"
+            f"🏢 {story['source']}\n"
+            f"📝 {story['summary']}\n"
+            f"🔗 {story['link']}\n\n"
         )
 
-    msg += (
-        f"{'━'*28}\n"
-        f"📰 /news   ⚙️ /preferences\n"
-        f"🤖 _Daily News at 8 AM IST_"
+    message += (
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "🤖 Powered by AI News Bot\n"
+        "⚙️ /settime HH:MM\n"
+        "🛑 /unsubscribe"
     )
 
-    return msg[:4096]
+    return message[:4096]
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 📤 SEND NEWS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def send_news(chat_id, niche):
+def send_news(chat_id):
 
     try:
 
-        stories = fetch_news(niche)
+        stories = fetch_pet_news()
 
         if not stories:
 
             bot.send_message(
                 chat_id,
-                "⚠️ No news found right now."
+                "⚠️ No pet industry news found right now."
             )
 
             return
 
-        message = build_message(
-            niche,
-            stories
-        )
+        message = build_news_message(stories)
 
         bot.send_message(
             chat_id,
@@ -490,232 +417,301 @@ def send_news(chat_id, niche):
             disable_web_page_preview=True
         )
 
-        log_delivery(
-            chat_id,
-            niche,
-            len(stories)
-        )
+        logger.info(f"✅ News sent to {chat_id}")
 
     except Exception as e:
 
-        print(f"[SEND ERROR] {e}")
+        logger.error(f"❌ Send error: {e}")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ⏰ SMART DAILY SCHEDULER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def scheduler_loop():
+
+    logger.info("⏰ Scheduler started")
+
+    while True:
 
         try:
 
-            bot.send_message(
-                chat_id,
-                "⚠️ Failed to send news."
+            users = get_all_users()
+
+            now = datetime.now(
+                pytz.timezone(DEFAULT_TIMEZONE)
             )
 
-        except:
-            pass
+            current_time = now.strftime("%H:%M")
+
+            for user in users:
+
+                if user["delivery_time"] == current_time:
+
+                    logger.info(
+                        f"📨 Sending scheduled news to {user['chat_id']}"
+                    )
+
+                    threading.Thread(
+                        target=send_news,
+                        args=(user["chat_id"],),
+                        daemon=True
+                    ).start()
+
+                    time.sleep(1)
+
+            time.sleep(60)
+
+        except Exception as e:
+
+            logger.error(f"❌ Scheduler error: {e}")
+
+            time.sleep(10)
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📩 COMMANDS
+# 🎛️ INLINE KEYBOARD
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def main_keyboard():
+
+    markup = types.InlineKeyboardMarkup()
+
+    markup.add(
+        types.InlineKeyboardButton(
+            "📰 Get Latest News",
+            callback_data="latest_news"
+        )
+    )
+
+    markup.add(
+        types.InlineKeyboardButton(
+            "⚙️ Set Delivery Time",
+            callback_data="set_time"
+        )
+    )
+
+    return markup
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🚀 COMMANDS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @bot.message_handler(commands=["start"])
 def start(message):
 
-    cid = message.chat.id
+    add_user(message.chat)
 
-    fname = message.chat.first_name or "Friend"
+    fname = escape_markdown(
+        message.chat.first_name or "Friend"
+    )
 
-    upsert_user(
-        cid,
-        message.chat.username,
-        message.chat.first_name,
-        message.chat.last_name
+    welcome = (
+        f"👋 *Welcome {fname}!*\n\n"
+        f"🐾 I'm your *Pet Industry AI News Bot*\n\n"
+        f"Every day you'll receive:\n"
+        f"• Pet industry news\n"
+        f"• Veterinary updates\n"
+        f"• Pet care trends\n"
+        f"• Animal startups\n"
+        f"• Pet technology news\n\n"
+        f"⏰ Default delivery time: *08:00 AM*\n\n"
+        f"Use:\n"
+        f"`/settime 08:30`\n"
+        f"to customize your news time."
     )
 
     bot.send_message(
-        cid,
-        (
-            f"👋 *Welcome, {escape_markdown(fname)}!*\n\n"
-            f"I'm your *AI Personalized News Bot* 🤖\n\n"
-            f"📰 Get the latest AI-curated news\n"
-            f"every day at *8:00 AM IST*\n\n"
-            f"{'━'*28}\n"
-            f"👇 *Choose your news category:*"
-        ),
-        reply_markup=niche_keyboard()
+        message.chat.id,
+        welcome,
+        reply_markup=main_keyboard()
+    )
+
+
+@bot.message_handler(commands=["help"])
+def help_command(message):
+
+    help_text = (
+        "📚 *AVAILABLE COMMANDS*\n\n"
+        "📰 /news → Get latest news now\n"
+        "⏰ /settime HH:MM → Set daily news time\n"
+        "🕒 /mytime → View your saved time\n"
+        "🛑 /unsubscribe → Stop daily news\n"
+        "▶️ /start → Restart the bot\n"
+        "❓ /help → Show help menu\n\n"
+        "Example:\n"
+        "`/settime 21:30`"
+    )
+
+    bot.send_message(
+        message.chat.id,
+        help_text
     )
 
 
 @bot.message_handler(commands=["news"])
-def news(message):
-
-    cid = message.chat.id
-
-    user = get_user(cid)
-
-    if not user:
-
-        start(message)
-
-        return
-
-    niche = user.get(
-        "niche",
-        "world"
-    )
+def latest_news(message):
 
     bot.send_message(
-        cid,
-        "📡 Fetching latest news..."
+        message.chat.id,
+        "📡 Fetching latest pet industry news..."
     )
 
     threading.Thread(
         target=send_news,
-        args=(cid, niche),
+        args=(message.chat.id,),
         daemon=True
     ).start()
 
 
-@bot.message_handler(commands=["preferences"])
-def preferences(message):
+@bot.message_handler(commands=["mytime"])
+def my_time(message):
+
+    user = get_user(message.chat.id)
+
+    if not user:
+        return
 
     bot.send_message(
         message.chat.id,
-        "⚙️ Choose your category:",
-        reply_markup=niche_keyboard()
+        (
+            f"⏰ Your daily news time is:\n\n"
+            f"*{user['delivery_time']}*"
+        )
     )
+
+
+@bot.message_handler(commands=["unsubscribe", "stoptime"])
+def unsubscribe(message):
+
+    unsubscribe_user(message.chat.id)
+
+    bot.send_message(
+        message.chat.id,
+        (
+            "🛑 You have unsubscribed from daily news.\n\n"
+            "Use /settime HH:MM anytime to re-enable."
+        )
+    )
+
+
+@bot.message_handler(commands=["settime"])
+def set_time(message):
+
+    try:
+
+        parts = message.text.split()
+
+        if len(parts) != 2:
+
+            raise ValueError
+
+        time_input = parts[1]
+
+        datetime.strptime(
+            time_input,
+            "%H:%M"
+        )
+
+        set_user_time(
+            message.chat.id,
+            time_input
+        )
+
+        bot.send_message(
+            message.chat.id,
+            (
+                f"✅ Daily delivery time updated!\n\n"
+                f"🕒 New time: *{time_input}*\n"
+                f"📅 You will receive pet industry news daily."
+            )
+        )
+
+    except:
+
+        bot.send_message(
+            message.chat.id,
+            (
+                "❌ Invalid format.\n\n"
+                "Use:\n"
+                "`/settime 08:30`"
+            )
+        )
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🔘 CALLBACKS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@bot.callback_query_handler(func=lambda c: True)
-def callbacks(call):
-
-    cid = call.message.chat.id
-
-    data = call.data
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
 
     bot.answer_callback_query(call.id)
 
-    if data.startswith("niche:"):
+    if call.data == "latest_news":
 
-        niche = data.split(":")[1]
-
-        set_niche(cid, niche)
-
-        cfg = NICHES.get(
-            niche,
-            NICHES["world"]
-        )
-
-        bot.edit_message_text(
-            (
-                f"✅ *Category Selected*\n\n"
-                f"📰 {cfg['label']}\n"
-                f"⏰ Daily delivery: *8:00 AM IST*\n\n"
-                f"📡 Fetching your latest briefing..."
-            ),
-            cid,
-            call.message.message_id,
-            parse_mode="Markdown"
+        bot.send_message(
+            call.message.chat.id,
+            "📡 Loading latest news..."
         )
 
         threading.Thread(
             target=send_news,
-            args=(cid, niche),
+            args=(call.message.chat.id,),
             daemon=True
         ).start()
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ⏰ DAILY BROADCAST
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    elif call.data == "set_time":
 
-def daily_broadcast():
-
-    users = get_all_active()
-
-    print(f"Broadcasting to {len(users)} users")
-
-    for u in users:
-
-        try:
-
-            send_news(
-                u["chat_id"],
-                u.get("niche", "world")
+        bot.send_message(
+            call.message.chat.id,
+            (
+                "⏰ Send your preferred time.\n\n"
+                "Example:\n"
+                "`/settime 21:00`"
             )
+        )
 
-            time.sleep(1)
-
-        except Exception as e:
-
-            print(f"[BROADCAST ERROR] {e}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🌐 FLASK SERVER
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-
-    return (
-        "<h2>🤖 AI News Bot Running</h2>"
-        "<p>Telegram bot is active.</p>"
-    )
-
-@app.route("/ping")
-def ping():
-
-    return "pong", 200
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🚀 MAIN
+# 🚀 STARTUP
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if __name__ == "__main__":
 
-    print("Starting AI News Bot...")
+    logger.info("🚀 Starting Pet Industry AI News Bot")
 
     init_db()
 
-    print("Database initialized")
+    # Start scheduler thread
+    threading.Thread(
+        target=scheduler_loop,
+        daemon=True
+    ).start()
 
-    def run_bot():
-
-        IST = pytz.timezone(TIMEZONE)
-
-        scheduler = BackgroundScheduler(
-            timezone=IST
-        )
-
-        scheduler.add_job(
-            daily_broadcast,
-            CronTrigger(
-                hour=DAILY_HOUR,
-                minute=DAILY_MINUTE,
-                timezone=IST
-            )
-        )
-
-        scheduler.start()
-
-        print("Scheduler started")
+    # Notify admin
+    if ADMIN_CHAT_ID:
 
         try:
 
             bot.send_message(
                 ADMIN_CHAT_ID,
-                "🟢 AI News Bot is LIVE on Render!"
+                "🟢 Pet Industry AI News Bot is LIVE!"
             )
 
         except Exception as e:
 
-            print(f"[ADMIN ERROR] {e}")
+            logger.error(f"Admin notify failed: {e}")
+
+    # Start polling thread
+    def run_bot():
 
         while True:
 
             try:
 
-                print("Polling started...")
+                logger.info("🤖 Bot polling started")
 
                 bot.infinity_polling(
                     timeout=30,
@@ -724,7 +720,7 @@ if __name__ == "__main__":
 
             except Exception as e:
 
-                print(f"[POLLING ERROR] {e}")
+                logger.error(f"Polling error: {e}")
 
                 time.sleep(5)
 
@@ -733,7 +729,7 @@ if __name__ == "__main__":
         daemon=True
     ).start()
 
-    print(f"Opening Flask port {PORT}")
+    logger.info(f"🌐 Flask running on port {PORT}")
 
     app.run(
         host="0.0.0.0",
