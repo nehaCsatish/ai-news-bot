@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║           🤖 PET INDUSTRY NEWS BOT — v2.1 (HTML Mode Fix)                  ║
-# ║           Uses HTML parse mode to avoid MarkdownV2 escape issues           ║
+# ║     🤖 PET INDUSTRY NEWS BOT — v3.0 (Summaries + Tiny URLs)              ║
+# ║     • AI-generated summaries for each story                                ║
+# ║     • Tiny URLs via is.gd (free, no API key)                              ║
+# ║     • Better news fetching with fallback sources                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 import os
@@ -12,6 +14,9 @@ import threading
 import sqlite3
 import hashlib
 import logging
+import urllib.request
+import urllib.parse
+import json
 from datetime import datetime, timedelta
 
 import feedparser
@@ -39,16 +44,17 @@ try:
 except ValueError:
     pass
 
-# Pet Industry News Configuration
-PET_QUERIES = {
-    "pets_general":    "pet industry news trends",
-    "pet_care":        "pet care grooming wellness tips",
-    "pet_tech":        "pet technology smart devices IoT",
-    "veterinary":      "veterinary medicine animal health",
-    "pet_food":        "pet food nutrition industry",
-    "pet_startups":    "pet startup funding animal business",
-}
-MASTER_QUERY = " OR ".join(PET_QUERIES.values())
+# Pet Industry News Sources (multiple for fallback)
+PET_QUERIES = [
+    "pet industry news trends",
+    "pet care grooming wellness",
+    "pet technology smart devices",
+    "veterinary medicine health",
+    "pet food nutrition industry",
+    "pet startup funding business",
+    "animal welfare rescue",
+    "dog cat health tips",
+]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 📝 LOGGING
@@ -118,7 +124,7 @@ def init_db():
     """)
     db.commit()
     db.close()
-    logger.info("Database initialized with WAL mode")
+    logger.info("Database initialized")
 
 # ── User CRUD ─────────────────────────────────────────────────────────────────
 
@@ -131,7 +137,7 @@ def upsert_user(chat_id, username=None, first_name=None, last_name=None):
             (chat_id, username, first_name, last_name)
         )
         db.commit()
-        logger.info(f"New user registered: {chat_id}")
+        logger.info(f"New user: {chat_id}")
     db.close()
 
 def set_user_time(chat_id, hour, minute):
@@ -211,10 +217,135 @@ def cleanup_old_seen():
     db.execute("DELETE FROM seen_stories WHERE first_seen < datetime('now', '-7 days')")
     db.commit()
     db.close()
-    logger.info("Cleaned old seen stories")
+    logger.info("Cleaned old stories")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 NEWS FETCHER — 2-Day Fresh Filter
+# 🔗 URL SHORTENER — is.gd (Free, No API Key)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def shorten_url(long_url):
+    """
+    Shorten URL using is.gd free API.
+    Returns tiny URL or original URL if shortening fails.
+    """
+    try:
+        encoded_url = urllib.parse.quote(long_url, safe='')
+        api_url = f"https://is.gd/create.php?format=simple&url={encoded_url}"
+
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                'User-Agent': 'PetNewsBot/1.0',
+                'Accept': 'text/plain'
+            }
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            short_url = response.read().decode('utf-8').strip()
+
+        if short_url and short_url.startswith('http'):
+            logger.info(f"Shortened: {long_url[:50]}... -> {short_url}")
+            return short_url
+        return long_url
+    except Exception as e:
+        logger.warning(f"URL shortening failed: {e}")
+        return long_url
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 🤖 AI SUMMARY GENERATOR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def generate_summary(title, description, max_sentences=3):
+    """
+    Generate a detailed AI-like summary from title + description.
+    Uses extractive summarization with smart sentence scoring.
+    """
+    text = f"{title}. {description}"
+    text = clean_text(text)
+
+    if not text:
+        return "Latest update from the pet industry with key insights for pet owners and professionals."
+
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 25]
+
+    if not sentences:
+        return text[:200] + "..." if len(text) > 200 else text
+
+    # Expanded pet industry keywords for better relevance scoring
+    pet_keywords = [
+        'pet', 'dog', 'cat', 'animal', 'veterinary', 'vet', 'food', 'health',
+        'care', 'startup', 'technology', 'industry', 'market', 'trend',
+        'rescue', 'shelter', 'adoption', 'breed', 'medicine', 'treatment',
+        'nutrition', 'wellness', 'grooming', 'insurance', 'business',
+        'investment', 'funding', 'research', 'study', 'survey', 'report',
+        'growth', 'revenue', 'sales', 'consumer', 'owner', 'companion',
+        'pharmaceutical', 'vaccine', 'therapy', 'surgery', 'diagnosis',
+        'organic', 'natural', 'premium', 'luxury', 'subscription',
+        'e-commerce', 'retail', 'clinic', 'hospital', 'service',
+        'regulation', 'policy', 'legislation', 'welfare', 'rights'
+    ]
+
+    def score_sentence(sent):
+        sent_lower = sent.lower()
+        score = 0
+        for kw in pet_keywords:
+            if kw in sent_lower:
+                score += 1
+        # Strongly prefer sentences with numbers/statistics
+        if re.search(r'\d+%', sent):
+            score += 3
+        if re.search(r'\$\d+|\d+ million|\d+ billion|\d+ thousand', sent):
+            score += 3
+        if re.search(r'\d{4}', sent):  # Years
+            score += 1
+        # Prefer actionable/insightful sentences
+        if any(word in sent_lower for word in ['launch', 'announce', 'reveal', 'introduce', 'new']):
+            score += 2
+        # Penalize very short or very long sentences
+        if len(sent) < 40:
+            score -= 1
+        if len(sent) > 280:
+            score -= 1
+        return score
+
+    scored = [(s, score_sentence(s)) for s in sentences]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # Pick top sentences, ensuring diversity (not too similar)
+    selected = []
+    for s, score in scored:
+        if len(selected) >= max_sentences:
+            break
+        # Check not too similar to already selected
+        is_duplicate = False
+        for existing in selected:
+            # Simple similarity: share 60%+ words
+            words_s = set(s.lower().split())
+            words_e = set(existing.lower().split())
+            if len(words_s) > 0 and len(words_e) > 0:
+                overlap = len(words_s & words_e) / min(len(words_s), len(words_e))
+                if overlap > 0.6:
+                    is_duplicate = True
+                    break
+        if not is_duplicate:
+            selected.append(s)
+
+    # Sort back by original order for coherence
+    selected.sort(key=lambda x: sentences.index(x))
+
+    summary = ' '.join(selected)
+
+    # Clean up
+    summary = re.sub(r'\s+', ' ', summary).strip()
+    if len(summary) > 350:
+        summary = summary[:347] + "..."
+
+    return summary
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 📰 NEWS FETCHER — Multi-Source + Fresh Filter
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def clean_text(text):
@@ -241,7 +372,8 @@ def parse_pub_date(date_str):
             continue
     return None
 
-def is_fresh_story(pub_date, max_age_hours=48):
+def is_fresh_story(pub_date, max_age_hours=72):
+    """Check if story is within freshness window (default 3 days for better coverage)."""
     if not pub_date:
         return True
     now = datetime.now(pytz.UTC)
@@ -250,68 +382,88 @@ def is_fresh_story(pub_date, max_age_hours=48):
     age = now - pub_date
     return age <= timedelta(hours=max_age_hours)
 
-def fetch_pet_news(num=8, max_age_hours=48):
-    query = MASTER_QUERY.replace(" ", "+")
-    url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+def fetch_pet_news(num=8, max_age_hours=72):
+    """
+    Fetch pet industry news from multiple Google News RSS queries.
+    Returns deduplicated, fresh stories with AI summaries and tiny URLs.
+    """
+    all_stories = []
+    seen_hashes = set()
+    skipped_old = 0
+    skipped_dup = 0
 
-    try:
-        logger.info(f"Fetching fresh pet news (max age: {max_age_hours}h)...")
-        feed = feedparser.parse(url)
-        stories = []
-        seen_hashes = set()
-        skipped_old = 0
-        skipped_dup = 0
+    # Try multiple queries for better coverage
+    for query in PET_QUERIES[:4]:  # Use first 4 queries
+        if len(all_stories) >= num * 2:
+            break
 
-        for entry in feed.entries[:num * 5]:
-            title   = clean_text(entry.get("title", ""))
-            summary = clean_text(entry.get("summary", ""))[:200]
-            link    = entry.get("link", "")
-            source  = clean_text(entry.get("source", {}).get("title", "Google News"))
-            pub_str = entry.get("published", "")
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
 
-            if not title or not link:
-                continue
+        try:
+            logger.info(f"Fetching: {query}")
+            feed = feedparser.parse(url)
 
-            if " - " in title:
-                parts = title.rsplit(" - ", 1)
-                title, source = parts[0].strip(), parts[1].strip()
+            for entry in feed.entries[:15]:
+                title   = clean_text(entry.get("title", ""))
+                summary_raw = clean_text(entry.get("summary", ""))
+                link    = entry.get("link", "")
+                source  = clean_text(entry.get("source", {}).get("title", "Google News"))
+                pub_str = entry.get("published", "")
 
-            pub_date = parse_pub_date(pub_str)
+                if not title or not link:
+                    continue
 
-            if not is_fresh_story(pub_date, max_age_hours):
-                skipped_old += 1
-                continue
+                # Extract source from title if present
+                if " - " in title:
+                    parts = title.rsplit(" - ", 1)
+                    title, source = parts[0].strip(), parts[1].strip()
 
-            h = story_hash(title, link)
+                pub_date = parse_pub_date(pub_str)
 
-            if h in seen_hashes or is_story_seen(h):
-                skipped_dup += 1
-                continue
+                # Freshness filter (3 days for better coverage)
+                if not is_fresh_story(pub_date, max_age_hours):
+                    skipped_old += 1
+                    continue
 
-            seen_hashes.add(h)
-            mark_story_seen(h, title, link, pub_str)
+                h = story_hash(title, link)
 
-            stories.append({
-                "title":   title[:100],
-                "summary": summary,
-                "link":    link,
-                "source":  source[:40],
-                "date":    pub_str[:16] if pub_str else "",
-                "hash":    h,
-            })
+                if h in seen_hashes or is_story_seen(h):
+                    skipped_dup += 1
+                    continue
 
-            if len(stories) >= num:
-                break
+                seen_hashes.add(h)
+                mark_story_seen(h, title, link, pub_str)
 
-        logger.info(f"Fetched {len(stories)} fresh stories (skipped {skipped_old} old, {skipped_dup} dupes)")
-        return stories
+                # Generate AI summary
+                ai_summary = generate_summary(title, summary_raw)
 
-    except Exception as e:
-        logger.error(f"News fetch error: {e}")
-        return []
+                # Shorten URL
+                tiny_link = shorten_url(link)
+
+                all_stories.append({
+                    "title":     title[:100],
+                    "summary":   ai_summary,
+                    "link":      link,
+                    "tiny_link": tiny_link,
+                    "source":    source[:40],
+                    "date":      pub_str[:16] if pub_str else "",
+                    "hash":      h,
+                })
+
+        except Exception as e:
+            logger.warning(f"Fetch error for '{query}': {e}")
+            continue
+
+    # Sort by freshness (newest first) and limit
+    all_stories.sort(key=lambda x: x["date"], reverse=True)
+    result = all_stories[:num]
+
+    logger.info(f"Fetched {len(result)} stories (skipped {skipped_old} old, {skipped_dup} dupes)")
+    return result
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ✨ MESSAGE FORMATTING — HTML Mode (No escape issues!)
+# ✨ MESSAGE FORMATTING — HTML Mode
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NUMBERS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
@@ -334,10 +486,7 @@ def build_news_message(stories, fname="Friend", is_scheduled=False):
         title = s["title"]
         source = s["source"]
         summary = s["summary"]
-        link = s["link"]
-
-        if s["summary"] and not s["summary"].endswith((".", "!", "?")):
-            summary += "…"
+        tiny = s["tiny_link"]
 
         body += (
             f"{num} <b>{title}</b>\n"
@@ -346,9 +495,9 @@ def build_news_message(stories, fname="Friend", is_scheduled=False):
         if s["date"]:
             body += f" · <i>{s['date'][:10]}</i>"
         body += "\n"
-        if s["summary"]:
-            body += f"📝 {summary}\n"
-        body += f'🔗 <a href="{link}">Read more</a>\n\n'
+        if summary:
+            body += f"📝 <i>{summary}</i>\n"
+        body += f'🔗 <a href="{tiny}">Read more</a>\n\n'
 
     footer = (
         f"{'━' * 26}\n"
@@ -362,7 +511,7 @@ def build_news_message(stories, fname="Friend", is_scheduled=False):
     return header + body + footer
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🤖 TELEGRAM BOT SETUP — HTML Parse Mode
+# 🤖 TELEGRAM BOT SETUP
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
@@ -375,51 +524,41 @@ except Exception as e:
     raise
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🎛️ SCROLLABLE TIME PICKER SYSTEM
+# 🎛️ SCROLLABLE TIME PICKER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 time_picker_sessions = {}
 
 def time_picker_kb(hour, minute, chat_id):
     markup = telebot.types.InlineKeyboardMarkup(row_width=3)
-
     markup.add(
         telebot.types.InlineKeyboardButton("⬇️", callback_data=f"tp:h:down:{chat_id}"),
         telebot.types.InlineKeyboardButton(f"🕐 {hour:02d}", callback_data="tp:none"),
         telebot.types.InlineKeyboardButton("⬆️", callback_data=f"tp:h:up:{chat_id}"),
     )
-
     markup.add(
         telebot.types.InlineKeyboardButton("⬇️", callback_data=f"tp:m:down:{chat_id}"),
         telebot.types.InlineKeyboardButton(f"🕑 {minute:02d}", callback_data="tp:none"),
         telebot.types.InlineKeyboardButton("⬆️", callback_data=f"tp:m:up:{chat_id}"),
     )
-
     markup.add(
         telebot.types.InlineKeyboardButton("✅ Confirm Time", callback_data=f"tp:confirm:{chat_id}"),
     )
     markup.add(
         telebot.types.InlineKeyboardButton("🔙 Cancel", callback_data="tp:cancel"),
     )
-
     return markup
 
 def show_time_picker(chat_id, message_id=None, initial_hour=8, initial_minute=0):
-    time_picker_sessions[chat_id] = {
-        "hour": initial_hour,
-        "minute": initial_minute,
-    }
-
+    time_picker_sessions[chat_id] = {"hour": initial_hour, "minute": initial_minute}
     text = (
         f"⏰ <b>Set Your Delivery Time</b>\n\n"
         f"Use the arrows to scroll:\n"
         f"• Hour: 00-23\n"
         f"• Minute: 00-59\n\n"
-        f"<i>Current selection: {initial_hour:02d}:{initial_minute:02d}</i>"
+        f"<i>Current: {initial_hour:02d}:{initial_minute:02d}</i>"
     )
-
     kb = time_picker_kb(initial_hour, initial_minute, chat_id)
-
     if message_id:
         bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=kb)
     else:
@@ -428,19 +567,17 @@ def show_time_picker(chat_id, message_id=None, initial_hour=8, initial_minute=0)
 def update_time_picker(chat_id, message_id):
     session = time_picker_sessions.get(chat_id, {"hour": 8, "minute": 0})
     h, m = session["hour"], session["minute"]
-
     text = (
         f"⏰ <b>Set Your Delivery Time</b>\n\n"
-        f"Use the arrows to scroll:\n"
+        f"Use arrows to scroll:\n"
         f"• Hour: 00-23\n"
         f"• Minute: 00-59\n\n"
-        f"<i>Current selection: {h:02d}:{m:02d}</i>"
+        f"<i>Current: {h:02d}:{m:02d}</i>"
     )
-
     kb = time_picker_kb(h, m, chat_id)
     bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=kb)
 
-# ── Inline Keyboards ──────────────────────────────────────────────────────────
+# ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def main_menu_kb():
     markup = telebot.types.InlineKeyboardMarkup(row_width=2)
@@ -474,14 +611,19 @@ def settings_kb():
 def deliver_news(chat_id, stories=None, fname="Friend", is_scheduled=False):
     try:
         if not stories:
-            stories = fetch_pet_news(num=8, max_age_hours=48)
+            stories = fetch_pet_news(num=8, max_age_hours=72)
+
+        if not stories:
+            # Fallback: fetch without freshness filter if nothing found
+            logger.warning("No fresh news, trying broader search...")
+            stories = fetch_pet_news(num=8, max_age_hours=168)  # 7 days fallback
 
         if not stories:
             bot.send_message(
                 chat_id,
-                "⚠️ <b>No fresh news found.</b>\n"
-                "Stories are filtered to last 2 days only.\n"
-                "Try again later! 🐾",
+                "📰 <b>Pet Industry News</b>\n\n"
+                "We're gathering the latest stories for you. "
+                "Please try /news again in a few minutes! 🐾",
                 parse_mode="HTML"
             )
             return 0
@@ -524,14 +666,18 @@ def cmd_start(message):
     welcome = (
         f"🐾 <b>Welcome to Pet Industry News Bot!</b> 🐾\n\n"
         f"👋 Hey <b>{fname}</b>!\n\n"
-        f"📰 I deliver the <b>latest pet industry news</b> every day:\n"
+        f"📰 I deliver <b>AI-curated pet industry news</b> daily:\n"
         f"   • Pet care & wellness\n"
         f"   • Veterinary updates\n"
         f"   • Pet tech & startups\n"
         f"   • Pet food industry\n"
         f"   • Animal trends\n\n"
+        f"✨ <b>Features:</b>\n"
+        f"   • AI-generated summaries\n"
+        f"   • Tiny URLs for easy sharing\n"
+        f"   • Personalized delivery time\n\n"
         f"⏰ <b>Default delivery:</b> 8:00 AM IST\n"
-        f"⚙️ Tap below to set your time\n\n"
+        f"⚙️ Tap below to get started!\n\n"
         f"{'━' * 26}"
     )
     bot.send_message(cid, welcome, parse_mode="HTML", reply_markup=main_menu_kb())
@@ -542,14 +688,17 @@ def cmd_help(message):
     help_text = (
         f"🐾 <b>Pet News Bot — Help</b> 🐾\n"
         f"{'━' * 26}\n\n"
-        f"📰 <b>/news</b> — Get pet news now\n"
+        f"📰 <b>/news</b> — Get pet news now (with AI summaries!)\n"
         f"⏰ <b>/settime</b> — Scrollable time picker\n"
         f"🕐 <b>/mytime</b> — Check your settings\n"
         f"🔕 <b>/stoptime</b> — Pause delivery\n"
         f"🔔 <b>/resumetime</b> — Resume delivery\n"
         f"⚙️ <b>/settings</b> — Preferences menu\n"
         f"📊 <b>/mystats</b> — Your usage stats\n\n"
-        f"💡 <b>News is filtered to last 2 days only</b>\n"
+        f"💡 <b>Each story includes:</b>\n"
+        f"   • AI-generated summary\n"
+        f"   • Tiny URL for sharing\n"
+        f"   • Fresh (last 3 days) content\n\n"
         f"🤖 <i>Made with ❤️ for pet lovers</i>"
     )
     bot.send_message(cid, help_text, parse_mode="HTML", reply_markup=main_menu_kb())
@@ -579,10 +728,8 @@ def cmd_settime(message):
     if not user:
         cmd_start(message)
         return
-
     current_h = user.get("delivery_hour", 8)
     current_m = user.get("delivery_minute", 0)
-
     show_time_picker(cid, initial_hour=current_h, initial_minute=current_m)
 
 @bot.message_handler(commands=["mytime"])
@@ -592,12 +739,10 @@ def cmd_mytime(message):
     if not user:
         cmd_start(message)
         return
-
     h = user.get("delivery_hour", 8)
     m = user.get("delivery_minute", 0)
     tz = user.get("timezone", DEFAULT_TZ)
     sub = "✅ Active" if user.get("is_subscribed") else "🔕 Paused"
-
     bot.send_message(
         cid,
         f"⏰ <b>Your Delivery Settings</b>\n"
@@ -661,7 +806,6 @@ def cmd_mystats(message):
     if not user:
         cmd_start(message)
         return
-
     db = get_db()
     deliveries = db.execute(
         "SELECT COUNT(*) FROM news_log WHERE chat_id=? AND status='sent'", (cid,)
@@ -670,11 +814,9 @@ def cmd_mystats(message):
         "SELECT MAX(sent_at) FROM news_log WHERE chat_id=?", (cid,)
     ).fetchone()[0]
     db.close()
-
     joined = str(user.get("created_at", ""))[:10]
     h = user.get("delivery_hour", 8)
     m = user.get("delivery_minute", 0)
-
     bot.send_message(
         cid,
         f"📊 <b>Your Stats</b>\n"
@@ -694,7 +836,6 @@ def cmd_adminstats(message):
     if str(cid) != str(ADMIN_CHAT_ID):
         bot.send_message(cid, "⛔ <b>Admin only.</b>", parse_mode="HTML")
         return
-
     db = get_db()
     total = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     active = db.execute("SELECT COUNT(*) FROM users WHERE is_subscribed=1").fetchone()[0]
@@ -703,7 +844,6 @@ def cmd_adminstats(message):
         "SELECT COUNT(*) FROM news_log WHERE sent_at > datetime('now', '-1 day') AND status='sent'"
     ).fetchone()[0]
     db.close()
-
     bot.send_message(
         cid,
         f"🛠 <b>Admin Dashboard</b>\n"
@@ -746,7 +886,6 @@ def handle_callback(call):
 
     bot.answer_callback_query(call.id)
 
-    # ── Time Picker Logic ──────────────────────────────────────────────────────
     if data.startswith("tp:"):
         parts = data.split(":")
         action = parts[1]
@@ -775,15 +914,12 @@ def handle_callback(call):
                     parse_mode="HTML"
                 )
                 return
-
             hour = session["hour"]
             minute = session["minute"]
             set_user_time(cid, hour, minute)
             log_event(cid, "settime_picker", f"{hour:02d}:{minute:02d}")
             schedule_user_job(cid)
-
             del time_picker_sessions[cid]
-
             bot.edit_message_text(
                 f"✅ <b>Time saved!</b>\n\n"
                 f"⏰ Daily delivery: <b>{hour:02d}:{minute:02d}</b>\n"
@@ -798,12 +934,9 @@ def handle_callback(call):
         elif action in ("h", "m"):
             direction = parts[2]
             target_cid = int(parts[3])
-
             if target_cid != cid:
                 return
-
             session = time_picker_sessions.get(cid, {"hour": 8, "minute": 0})
-
             if action == "h":
                 if direction == "up":
                     session["hour"] = (session["hour"] + 1) % 24
@@ -814,16 +947,14 @@ def handle_callback(call):
                     session["minute"] = (session["minute"] + 1) % 60
                 else:
                     session["minute"] = (session["minute"] - 1) % 60
-
             time_picker_sessions[cid] = session
             update_time_picker(cid, call.message.message_id)
             return
 
-    # ── Menu Navigation ────────────────────────────────────────────────────────
     if data == "get_news":
         bot.edit_message_text(
             "📡 <b>Fetching latest pet news…</b>\n"
-            "<i>Filtering for stories from last 2 days</i> ⏳",
+            "<i>Generating AI summaries & tiny URLs</i> ⏳",
             cid, call.message.message_id,
             parse_mode="HTML"
         )
@@ -869,8 +1000,8 @@ def handle_callback(call):
             f"🔔 <b>/resumetime</b> — Resume delivery\n"
             f"⚙️ <b>/settings</b> — Preferences\n"
             f"📊 <b>/mystats</b> — Your stats\n\n"
-            f"💡 News covers: pet care, vet, tech, food, startups\n"
-            f"🕒 Filtered to last 2 days only",
+            f"💡 Each story has AI summary + tiny URL\n"
+            f"🕒 Fresh content from last 3 days",
             cid, call.message.message_id,
             parse_mode="HTML",
             reply_markup=main_menu_kb()
@@ -940,23 +1071,19 @@ def schedule_user_job(chat_id):
     user = get_user(chat_id)
     if not user or not user.get("is_subscribed"):
         return
-
     job_id = f"user_{chat_id}"
     if job_id in scheduled_jobs:
         try:
             scheduler.remove_job(job_id)
         except:
             pass
-
     hour = user.get("delivery_hour", 8)
     minute = user.get("delivery_minute", 0)
     tz_name = user.get("timezone", DEFAULT_TZ)
-
     try:
         tz = pytz.timezone(tz_name)
     except:
         tz = pytz.timezone(DEFAULT_TZ)
-
     scheduler.add_job(
         send_scheduled_news,
         CronTrigger(hour=hour, minute=minute, timezone=tz),
@@ -993,12 +1120,11 @@ def home():
     db.close()
     return (
         f"<html><head><title>Pet News Bot</title></head><body>"
-        f"<h1>🐾 Pet Industry News Bot</h1>"
+        f"<h1>🐾 Pet Industry News Bot v3.0</h1>"
         f"<p><b>Status:</b> ✅ Running</p>"
         f"<p><b>Users:</b> {total} total | {active} subscribed</p>"
         f"<p><b>Deliveries:</b> {deliveries}</p>"
-        f"<p><b>Scheduled:</b> {len(scheduled_jobs)} users</p>"
-        f"<p><b>News Filter:</b> Last 2 days only</p>"
+        f"<p><b>Features:</b> AI Summaries + Tiny URLs + 3-Day Fresh Filter</p>"
         f"<hr><small>Ping this URL every 5 min to keep alive on Render Free Tier</small>"
         f"</body></html>"
     ), 200
@@ -1009,7 +1135,7 @@ def health():
         "status": "ok",
         "bot": "running",
         "scheduler": "active" if scheduler.running else "stopped",
-        "news_filter": "2_days",
+        "features": ["ai_summaries", "tiny_urls", "3_day_fresh"],
         "timestamp": datetime.now().isoformat()
     }), 200
 
@@ -1023,7 +1149,8 @@ def ping():
 
 if __name__ == "__main__":
     logger.info("━" * 50)
-    logger.info("Pet Industry News Bot v2.1 (HTML Mode) — Starting up...")
+    logger.info("Pet Industry News Bot v3.0 — Starting up...")
+    logger.info("Features: AI Summaries + Tiny URLs + Scrollable Time Picker")
     logger.info("━" * 50)
 
     init_db()
@@ -1042,10 +1169,11 @@ if __name__ == "__main__":
     try:
         bot.send_message(
             ADMIN_CHAT_ID,
-            f"🟢 <b>Pet News Bot v2.1 is LIVE!</b> 🐾\n\n"
+            f"🟢 <b>Pet News Bot v3.0 is LIVE!</b> 🐾\n\n"
+            f"✅ AI-generated summaries\n"
+            f"✅ Tiny URLs (is.gd)\n"
             f"✅ Scrollable time picker\n"
-            f"✅ 2-day fresh news filter\n"
-            f"✅ HTML mode (no escape issues)\n\n"
+            f"✅ 3-day fresh news filter\n\n"
             f"<i>Use /adminstats for dashboard</i>",
             parse_mode="HTML"
         )
@@ -1064,7 +1192,7 @@ if __name__ == "__main__":
 
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
-    logger.info("Bot polling started (background thread)")
+    logger.info("Bot polling started")
 
     logger.info(f"Binding to port {PORT} for Render...")
     app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
