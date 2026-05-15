@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║     🤖 PET INDUSTRY NEWS BOT — v3.0 (Summaries + Tiny URLs)              ║
-# ║     • AI-generated summaries for each story                                ║
-# ║     • Tiny URLs via is.gd (free, no API key)                              ║
-# ║     • Better news fetching with fallback sources                          ║
+# ║     🤖 PET INDUSTRY NEWS BOT — v4.0 (REAL Article Summaries)              ║
+# ║     • Downloads full articles from URLs                                   ║
+# ║     • Extracts actual content with newspaper3k / trafilatura             ║
+# ║     • Generates real 3-4 line summaries from article text                ║
+# ║     • Tiny URLs via is.gd                                                 ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 import os
@@ -16,7 +17,6 @@ import hashlib
 import logging
 import urllib.request
 import urllib.parse
-import json
 from datetime import datetime, timedelta
 
 import feedparser
@@ -25,6 +25,20 @@ import telebot
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+# Article extraction libraries
+try:
+    from newspaper import Article
+    NEWSPAPER_AVAILABLE = True
+except ImportError:
+    NEWSPAPER_AVAILABLE = False
+    logger.warning("newspaper3k not installed, using fallback extraction")
+
+try:
+    import trafilatura
+    TRAFILATURA_AVAILABLE = True
+except ImportError:
+    TRAFILATURA_AVAILABLE = False
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🔧 CONFIGURATION
@@ -44,16 +58,15 @@ try:
 except ValueError:
     pass
 
-# Pet Industry News Sources (multiple for fallback)
+# Pet Industry News Queries
 PET_QUERIES = [
-    "pet industry news trends",
-    "pet care grooming wellness",
-    "pet technology smart devices",
-    "veterinary medicine health",
-    "pet food nutrition industry",
-    "pet startup funding business",
-    "animal welfare rescue",
-    "dog cat health tips",
+    "pet industry news",
+    "veterinary medicine news",
+    "pet food industry",
+    "pet technology startup",
+    "animal health research",
+    "dog cat health news",
+    "pet care wellness trends",
 ]
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -220,31 +233,17 @@ def cleanup_old_seen():
     logger.info("Cleaned old stories")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🔗 URL SHORTENER — is.gd (Free, No API Key)
+# 🔗 URL SHORTENER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def shorten_url(long_url):
-    """
-    Shorten URL using is.gd free API.
-    Returns tiny URL or original URL if shortening fails.
-    """
     try:
         encoded_url = urllib.parse.quote(long_url, safe='')
         api_url = f"https://is.gd/create.php?format=simple&url={encoded_url}"
-
-        req = urllib.request.Request(
-            api_url,
-            headers={
-                'User-Agent': 'PetNewsBot/1.0',
-                'Accept': 'text/plain'
-            }
-        )
-
+        req = urllib.request.Request(api_url, headers={'User-Agent': 'PetNewsBot/1.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
             short_url = response.read().decode('utf-8').strip()
-
         if short_url and short_url.startswith('http'):
-            logger.info(f"Shortened: {long_url[:50]}... -> {short_url}")
             return short_url
         return long_url
     except Exception as e:
@@ -252,32 +251,67 @@ def shorten_url(long_url):
         return long_url
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 🤖 AI SUMMARY GENERATOR
+# 📰 ARTICLE CONTENT EXTRACTION — Full Text from URL
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def generate_summary(title, description, max_sentences=2):
+def extract_article_text(url, timeout=15):
     """
-    Generate a meaningful summary from title + description.
-    If description is empty/too short, creates an informative context summary.
+    Download and extract full article text from a URL.
+    Uses newspaper3k first, then trafilatura as fallback.
+    Returns article text or None if extraction fails.
     """
-    title = clean_text(title)
-    description = clean_text(description)
+    # Try newspaper3k first
+    if NEWSPAPER_AVAILABLE:
+        try:
+            article = Article(url, language='en', fetch_images=False)
+            article.download()
+            article.parse()
+            if article.text and len(article.text) > 100:
+                logger.info(f"newspaper3k extracted {len(article.text)} chars from {url[:60]}")
+                return article.text
+        except Exception as e:
+            logger.debug(f"newspaper3k failed for {url[:60]}: {e}")
 
-    # If description is basically empty or just repeats title, create context summary
-    if not description or len(description) < 30 or description.lower() in title.lower() or title.lower() in description.lower():
-        return _generate_context_summary(title)
+    # Fallback to trafilatura
+    if TRAFILATURA_AVAILABLE:
+        try:
+            downloaded = trafilatura.fetch_url(url)
+            if downloaded:
+                text = trafilatura.extract(downloaded, include_formatting=False, include_links=False)
+                if text and len(text) > 100:
+                    logger.info(f"trafilatura extracted {len(text)} chars from {url[:60]}")
+                    return text
+        except Exception as e:
+            logger.debug(f"trafilatura failed for {url[:60]}: {e}")
 
-    # Use description only (ignore title to avoid repetition)
-    text = description
+    return None
+
+
+def generate_real_summary(title, article_text, max_lines=4):
+    """
+    Generate a real summary from full article text.
+    Uses extractive summarization on the actual article content.
+    """
+    if not article_text or len(article_text) < 50:
+        return None
+
+    # Clean the text
+    text = clean_text(article_text)
 
     # Split into sentences
     sentences = re.split(r'(?<=[.!?])\s+', text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 30 and len(s.strip()) < 300]
 
-    if not sentences or len(sentences) == 0:
-        return _generate_context_summary(title)
+    if len(sentences) < 3:
+        # Not enough sentences, return first meaningful chunk
+        if text:
+            first_chunk = text[:300]
+            if len(first_chunk) == 300:
+                first_chunk += "..."
+            return first_chunk
+        return None
 
-    # Score sentences for informativeness
+    # Score sentences for informativeness and relevance
     pet_keywords = [
         'pet', 'dog', 'cat', 'animal', 'veterinary', 'vet', 'food', 'health',
         'care', 'startup', 'technology', 'industry', 'market', 'trend',
@@ -290,48 +324,62 @@ def generate_summary(title, description, max_sentences=2):
         'e-commerce', 'retail', 'clinic', 'hospital', 'service',
         'regulation', 'policy', 'legislation', 'welfare', 'rights',
         'university', 'college', 'researchers', 'scientists', 'professor',
-        'facility', 'unit', 'center', 'program', 'initiative'
+        'facility', 'unit', 'center', 'program', 'initiative',
+        'launch', 'announce', 'introduce', 'reveal', 'discover', 'find'
     ]
 
     def score_sentence(sent):
         sent_lower = sent.lower()
         score = 0
+
         # Keyword relevance
         for kw in pet_keywords:
             if kw in sent_lower:
                 score += 1
+
         # Prefer sentences with numbers/statistics
         if re.search(r'\d+%', sent):
             score += 3
-        if re.search(r'\$\d+|\d+ million|\d+ billion|\d+ thousand', sent):
+        if re.search(r'\$\d+|\d+ million|\d+ billion|\d+ thousand|\d+ crores', sent):
             score += 3
-        # Prefer informative over generic
-        if any(word in sent_lower for word in ['because', 'according', 'found', 'shows', 'reveals', 'discovered']):
+        if re.search(r'\d{4}', sent):
+            score += 1
+
+        # Prefer informative sentences
+        if any(word in sent_lower for word in ['according', 'found', 'shows', 'reveals', 'discovered', 'study', 'research']):
             score += 2
-        # Penalize very short or generic sentences
+
+        # Prefer actionable sentences
+        if any(word in sent_lower for word in ['launch', 'announce', 'introduce', 'new', 'plan', 'will']):
+            score += 1
+
+        # Penalize very short or very long
         if len(sent) < 40:
             score -= 2
-        if len(sent) > 300:
+        if len(sent) > 280:
             score -= 1
-        # Penalize sentences that are too similar to title
+
+        # Heavy penalty for sentences that just repeat the title
         title_words = set(title.lower().split())
-        sent_words = set(sent.lower().split())
+        sent_words = set(sent_lower.split())
         if len(title_words) > 0:
             overlap = len(title_words & sent_words) / len(title_words)
             if overlap > 0.7:
-                score -= 5  # Heavy penalty for title repetition
+                score -= 10
+
         return score
 
     scored = [(s, score_sentence(s)) for s in sentences]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    # Pick best sentence(s)
+    # Pick top sentences ensuring diversity
     selected = []
     for s, score in scored:
-        if len(selected) >= max_sentences:
+        if len(selected) >= max_lines:
             break
-        if score < -2:  # Skip very low quality sentences
+        if score < -5:
             continue
+
         # Check not too similar to already selected
         is_duplicate = False
         for existing in selected:
@@ -346,68 +394,23 @@ def generate_summary(title, description, max_sentences=2):
             selected.append(s)
 
     if not selected:
-        return _generate_context_summary(title)
+        return None
 
-    # Sort back by original order
+    # Sort back by original order for coherence
     selected.sort(key=lambda x: sentences.index(x))
 
     summary = ' '.join(selected)
     summary = re.sub(r'\s+', ' ', summary).strip()
 
-    if len(summary) > 280:
-        summary = summary[:277] + "..."
+    # Limit length
+    if len(summary) > 450:
+        summary = summary[:447] + "..."
 
     return summary
 
-
-def _generate_context_summary(title):
-    """
-    When no description is available, generate an informative context summary
-    based on keywords extracted from the title.
-    """
-    title_lower = title.lower()
-
-    # Extract key entities from title
-    context_parts = []
-
-    # Check for specific topics and add context
-    if any(word in title_lower for word in ['veterinary', 'vet', 'medicine', 'hospital', 'clinic']):
-        context_parts.append("This development could impact veterinary care standards and animal health outcomes.")
-
-    if any(word in title_lower for word in ['food', 'nutrition', 'diet', 'feed']):
-        context_parts.append("Pet nutrition trends directly affect millions of pet owners' purchasing decisions.")
-
-    if any(word in title_lower for word in ['startup', 'funding', 'investment', 'million', 'billion']):
-        context_parts.append("The pet industry continues to attract significant investor interest and capital.")
-
-    if any(word in title_lower for word in ['technology', 'tech', 'app', 'ai', 'digital', 'smart']):
-        context_parts.append("Pet technology innovations are transforming how owners care for their animals.")
-
-    if any(word in title_lower for word in ['research', 'study', 'university', 'scientists', 'professor']):
-        context_parts.append("Academic research in this area contributes to advancing pet health knowledge.")
-
-    if any(word in title_lower for word in ['rescue', 'shelter', 'adoption', 'welfare']):
-        context_parts.append("Animal welfare developments affect policy and rescue operations nationwide.")
-
-    if any(word in title_lower for word in ['trend', 'market', 'growth', 'industry']):
-        context_parts.append("Market trends in the pet sector reflect changing consumer preferences and opportunities.")
-
-    if any(word in title_lower for word in ['dog', 'puppy', 'canine']):
-        context_parts.append("Dog-related news remains the largest segment of the pet industry market.")
-
-    if any(word in title_lower for word in ['cat', 'kitten', 'feline']):
-        context_parts.append("Cat care innovations continue to drive growth in feline health and wellness products.")
-
-    if not context_parts:
-        context_parts.append("This story highlights important developments in the pet industry landscape.")
-
-    # Pick the most relevant 1-2 context sentences
-    summary = ' '.join(context_parts[:2])
-
-    return summary
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📰 NEWS FETCHER — Multi-Source + Fresh Filter
+# 📰 NEWS FETCHER — With REAL Article Summaries
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def clean_text(text):
@@ -435,7 +438,6 @@ def parse_pub_date(date_str):
     return None
 
 def is_fresh_story(pub_date, max_age_hours=72):
-    """Check if story is within freshness window (default 3 days for better coverage)."""
     if not pub_date:
         return True
     now = datetime.now(pytz.UTC)
@@ -446,16 +448,15 @@ def is_fresh_story(pub_date, max_age_hours=72):
 
 def fetch_pet_news(num=8, max_age_hours=72):
     """
-    Fetch pet industry news from multiple Google News RSS queries.
-    Returns deduplicated, fresh stories with AI summaries and tiny URLs.
+    Fetch pet news with REAL article summaries.
+    For each story, downloads the full article and extracts a summary.
     """
     all_stories = []
     seen_hashes = set()
     skipped_old = 0
     skipped_dup = 0
 
-    # Try multiple queries for better coverage
-    for query in PET_QUERIES[:4]:  # Use first 4 queries
+    for query in PET_QUERIES[:4]:
         if len(all_stories) >= num * 2:
             break
 
@@ -463,10 +464,10 @@ def fetch_pet_news(num=8, max_age_hours=72):
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
 
         try:
-            logger.info(f"Fetching: {query}")
+            logger.info(f"Fetching RSS: {query}")
             feed = feedparser.parse(url)
 
-            for entry in feed.entries[:15]:
+            for entry in feed.entries[:10]:
                 title   = clean_text(entry.get("title", ""))
                 summary_raw = clean_text(entry.get("summary", ""))
                 link    = entry.get("link", "")
@@ -476,14 +477,12 @@ def fetch_pet_news(num=8, max_age_hours=72):
                 if not title or not link:
                     continue
 
-                # Extract source from title if present
                 if " - " in title:
                     parts = title.rsplit(" - ", 1)
                     title, source = parts[0].strip(), parts[1].strip()
 
                 pub_date = parse_pub_date(pub_str)
 
-                # Freshness filter (3 days for better coverage)
                 if not is_fresh_story(pub_date, max_age_hours):
                     skipped_old += 1
                     continue
@@ -497,15 +496,26 @@ def fetch_pet_news(num=8, max_age_hours=72):
                 seen_hashes.add(h)
                 mark_story_seen(h, title, link, pub_str)
 
-                # Generate AI summary
-                ai_summary = generate_summary(title, summary_raw)
+                # 🔥 EXTRACT FULL ARTICLE AND GENERATE REAL SUMMARY
+                logger.info(f"Extracting article: {title[:60]}...")
+                article_text = extract_article_text(link)
+
+                if article_text:
+                    real_summary = generate_real_summary(title, article_text, max_lines=4)
+                    if real_summary and len(real_summary) > 50:
+                        final_summary = real_summary
+                    else:
+                        # Fallback to RSS description if extraction failed
+                        final_summary = summary_raw[:250] if summary_raw else None
+                else:
+                    final_summary = summary_raw[:250] if summary_raw else None
 
                 # Shorten URL
                 tiny_link = shorten_url(link)
 
                 all_stories.append({
                     "title":     title[:100],
-                    "summary":   ai_summary,
+                    "summary":   final_summary,
                     "link":      link,
                     "tiny_link": tiny_link,
                     "source":    source[:40],
@@ -513,19 +523,22 @@ def fetch_pet_news(num=8, max_age_hours=72):
                     "hash":      h,
                 })
 
+                # Small delay to be polite to servers
+                time.sleep(0.3)
+
         except Exception as e:
             logger.warning(f"Fetch error for '{query}': {e}")
             continue
 
-    # Sort by freshness (newest first) and limit
+    # Sort by freshness and limit
     all_stories.sort(key=lambda x: x["date"], reverse=True)
     result = all_stories[:num]
 
-    logger.info(f"Fetched {len(result)} stories (skipped {skipped_old} old, {skipped_dup} dupes)")
+    logger.info(f"Fetched {len(result)} stories with real summaries (skipped {skipped_old} old, {skipped_dup} dupes)")
     return result
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ✨ MESSAGE FORMATTING — HTML Mode
+# ✨ MESSAGE FORMATTING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 NUMBERS = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
@@ -538,8 +551,8 @@ def build_news_message(stories, fname="Friend", is_scheduled=False):
         f"🐾 <b>PET INDUSTRY DAILY</b> 🐾\n"
         f"📅 {today}\n"
         f"👋 Hey <b>{fname}</b>!\n"
-        f"🤖 Curated by AI News Bot\n"
-        f"{'━' * 26}\n\n"
+        f"🤖 AI-curated with real article summaries\n"
+        f"{'━' * 28}\n\n"
     )
 
     body = ""
@@ -550,25 +563,44 @@ def build_news_message(stories, fname="Friend", is_scheduled=False):
         summary = s["summary"]
         tiny = s["tiny_link"]
 
+        # Freshness indicator
+        freshness = ""
+        if s["date"]:
+            try:
+                pub = parse_pub_date(s["date"])
+                if pub:
+                    age = datetime.now(pytz.UTC) - pub
+                    if age.days == 0:
+                        freshness = " · 🔥 Today"
+                    elif age.days == 1:
+                        freshness = " · 📌 Yesterday"
+            except:
+                pass
+
         body += (
             f"{num} <b>{title}</b>\n"
-            f"📍 {source}"
+            f"📰 {source}"
         )
         if s["date"]:
             body += f" · <i>{s['date'][:10]}</i>"
-        body += "\n"
+        body += f"{freshness}\n"
+
         if summary:
-            body += f"📝 <i>{summary}</i>\n"
-        body += f'🔗 <a href="{tiny}">Read more</a>\n\n'
+            body += f"💡 <i>{summary}</i>\n"
+        else:
+            body += f"💡 <i>Read the full article for details.</i>\n"
+
+        body += f'🔗 <a href="{tiny}">Read full story</a>\n\n'
 
     footer = (
-        f"{'━' * 26}\n"
+        f"{'━' * 28}\n"
+        f"📊 <i>{len(stories)} stories with AI summaries</i>\n"
         f"⚙️ /settime · 📰 /news · ❓ /help\n"
     )
     if is_scheduled:
-        footer += f"⏰ <i>Your daily briefing</i> 🌅\n"
+        footer += f"⏰ <i>Your daily briefing — delivered on time</i> 🌅\n"
     else:
-        footer += f"⏰ <i>On-demand briefing</i> 📡\n"
+        footer += f"⏰ <i>On-demand briefing — fresh from the pet world</i> 📡\n"
 
     return header + body + footer
 
@@ -615,7 +647,7 @@ def show_time_picker(chat_id, message_id=None, initial_hour=8, initial_minute=0)
     time_picker_sessions[chat_id] = {"hour": initial_hour, "minute": initial_minute}
     text = (
         f"⏰ <b>Set Your Delivery Time</b>\n\n"
-        f"Use the arrows to scroll:\n"
+        f"Use arrows to scroll:\n"
         f"• Hour: 00-23\n"
         f"• Minute: 00-59\n\n"
         f"<i>Current: {initial_hour:02d}:{initial_minute:02d}</i>"
@@ -676,16 +708,15 @@ def deliver_news(chat_id, stories=None, fname="Friend", is_scheduled=False):
             stories = fetch_pet_news(num=8, max_age_hours=72)
 
         if not stories:
-            # Fallback: fetch without freshness filter if nothing found
-            logger.warning("No fresh news, trying broader search...")
-            stories = fetch_pet_news(num=8, max_age_hours=168)  # 7 days fallback
+            stories = fetch_pet_news(num=8, max_age_hours=168)  # 7-day fallback
 
         if not stories:
             bot.send_message(
                 chat_id,
                 "📰 <b>Pet Industry News</b>\n\n"
-                "We're gathering the latest stories for you. "
-                "Please try /news again in a few minutes! 🐾",
+                "🕵️ <i>Our AI is scouting for the latest stories...</i>\n\n"
+                "The pet industry moves fast, and sometimes the news feed needs a moment to refresh. "
+                "Please try /news again in 10-15 minutes! 🐾",
                 parse_mode="HTML"
             )
             return 0
@@ -734,13 +765,13 @@ def cmd_start(message):
         f"   • Pet tech & startups\n"
         f"   • Pet food industry\n"
         f"   • Animal trends\n\n"
-        f"✨ <b>Features:</b>\n"
-        f"   • AI-generated summaries\n"
-        f"   • Tiny URLs for easy sharing\n"
-        f"   • Personalized delivery time\n\n"
+        f"✨ <b>What's New:</b>\n"
+        f"   • <b>Real article summaries</b> — AI reads full articles\n"
+        f"   • <b>Tiny URLs</b> — Easy sharing\n"
+        f"   • <b>3-4 line summaries</b> — Key insights only\n\n"
         f"⏰ <b>Default delivery:</b> 8:00 AM IST\n"
         f"⚙️ Tap below to get started!\n\n"
-        f"{'━' * 26}"
+        f"{'━' * 28}"
     )
     bot.send_message(cid, welcome, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -749,18 +780,17 @@ def cmd_help(message):
     cid = message.chat.id
     help_text = (
         f"🐾 <b>Pet News Bot — Help</b> 🐾\n"
-        f"{'━' * 26}\n\n"
-        f"📰 <b>/news</b> — Get pet news now (with AI summaries!)\n"
+        f"{'━' * 28}\n\n"
+        f"📰 <b>/news</b> — Get pet news with real summaries\n"
         f"⏰ <b>/settime</b> — Scrollable time picker\n"
         f"🕐 <b>/mytime</b> — Check your settings\n"
         f"🔕 <b>/stoptime</b> — Pause delivery\n"
         f"🔔 <b>/resumetime</b> — Resume delivery\n"
         f"⚙️ <b>/settings</b> — Preferences menu\n"
         f"📊 <b>/mystats</b> — Your usage stats\n\n"
-        f"💡 <b>Each story includes:</b>\n"
-        f"   • AI-generated summary\n"
-        f"   • Tiny URL for sharing\n"
-        f"   • Fresh (last 3 days) content\n\n"
+        f"💡 <b>How summaries work:</b>\n"
+        f"   The bot downloads each article, reads the full text,\n"
+        f"   and extracts 3-4 key sentences as a summary.\n\n"
         f"🤖 <i>Made with ❤️ for pet lovers</i>"
     )
     bot.send_message(cid, help_text, parse_mode="HTML", reply_markup=main_menu_kb())
@@ -808,7 +838,7 @@ def cmd_mytime(message):
     bot.send_message(
         cid,
         f"⏰ <b>Your Delivery Settings</b>\n"
-        f"{'━' * 26}\n\n"
+        f"{'━' * 28}\n\n"
         f"🕐 Time: <b>{h:02d}:{m:02d}</b>\n"
         f"🌍 Timezone: <b>{tz}</b>\n"
         f"📬 Status: <b>{sub}</b>\n\n"
@@ -856,7 +886,7 @@ def cmd_settings(message):
     bot.send_message(
         cid,
         f"⚙️ <b>Your Settings</b>\n"
-        f"{'━' * 26}",
+        f"{'━' * 28}",
         parse_mode="HTML",
         reply_markup=settings_kb()
     )
@@ -882,7 +912,7 @@ def cmd_mystats(message):
     bot.send_message(
         cid,
         f"📊 <b>Your Stats</b>\n"
-        f"{'━' * 26}\n\n"
+        f"{'━' * 28}\n\n"
         f"👤 Name: <b>{user.get('first_name') or 'N/A'}</b>\n"
         f"📬 Briefings received: <b>{deliveries}</b>\n"
         f"📅 Member since: <b>{joined}</b>\n"
@@ -909,7 +939,7 @@ def cmd_adminstats(message):
     bot.send_message(
         cid,
         f"🛠 <b>Admin Dashboard</b>\n"
-        f"{'━' * 26}\n\n"
+        f"{'━' * 28}\n\n"
         f"👥 Total users: <b>{total}</b>\n"
         f"✅ Subscribed: <b>{active}</b>\n"
         f"📬 Total deliveries: <b>{deliveries}</b>\n"
@@ -1016,7 +1046,7 @@ def handle_callback(call):
     if data == "get_news":
         bot.edit_message_text(
             "📡 <b>Fetching latest pet news…</b>\n"
-            "<i>Generating AI summaries & tiny URLs</i> ⏳",
+            "<i>Downloading articles & generating AI summaries</i> ⏳",
             cid, call.message.message_id,
             parse_mode="HTML"
         )
@@ -1041,7 +1071,7 @@ def handle_callback(call):
         sub = "✅ Active" if (user and user.get("is_subscribed")) else "🔕 Paused"
         bot.edit_message_text(
             f"⚙️ <b>Your Settings</b>\n"
-            f"{'━' * 26}\n\n"
+            f"{'━' * 28}\n\n"
             f"🕐 Time: <b>{h:02d}:{m:02d}</b>\n"
             f"🌍 Timezone: <b>{tz}</b>\n"
             f"📬 Status: <b>{sub}</b>\n\n"
@@ -1054,15 +1084,15 @@ def handle_callback(call):
     elif data == "show_help":
         bot.edit_message_text(
             f"🐾 <b>Pet News Bot — Help</b> 🐾\n"
-            f"{'━' * 26}\n\n"
-            f"📰 <b>/news</b> — Get news now\n"
+            f"{'━' * 28}\n\n"
+            f"📰 <b>/news</b> — Get news with real summaries\n"
             f"⏰ <b>/settime</b> — Scrollable time picker\n"
             f"🕐 <b>/mytime</b> — Check settings\n"
             f"🔕 <b>/stoptime</b> — Pause delivery\n"
             f"🔔 <b>/resumetime</b> — Resume delivery\n"
             f"⚙️ <b>/settings</b> — Preferences\n"
             f"📊 <b>/mystats</b> — Your stats\n\n"
-            f"💡 Each story has AI summary + tiny URL\n"
+            f"💡 Each story has a real article summary\n"
             f"🕒 Fresh content from last 3 days",
             cid, call.message.message_id,
             parse_mode="HTML",
@@ -1182,11 +1212,11 @@ def home():
     db.close()
     return (
         f"<html><head><title>Pet News Bot</title></head><body>"
-        f"<h1>🐾 Pet Industry News Bot v3.0</h1>"
+        f"<h1>🐾 Pet Industry News Bot v4.0</h1>"
         f"<p><b>Status:</b> ✅ Running</p>"
         f"<p><b>Users:</b> {total} total | {active} subscribed</p>"
         f"<p><b>Deliveries:</b> {deliveries}</p>"
-        f"<p><b>Features:</b> AI Summaries + Tiny URLs + 3-Day Fresh Filter</p>"
+        f"<p><b>Features:</b> Real Article Summaries + Tiny URLs</p>"
         f"<hr><small>Ping this URL every 5 min to keep alive on Render Free Tier</small>"
         f"</body></html>"
     ), 200
@@ -1197,7 +1227,7 @@ def health():
         "status": "ok",
         "bot": "running",
         "scheduler": "active" if scheduler.running else "stopped",
-        "features": ["ai_summaries", "tiny_urls", "3_day_fresh"],
+        "features": ["real_summaries", "tiny_urls", "article_extraction"],
         "timestamp": datetime.now().isoformat()
     }), 200
 
@@ -1211,8 +1241,8 @@ def ping():
 
 if __name__ == "__main__":
     logger.info("━" * 50)
-    logger.info("Pet Industry News Bot v3.0 — Starting up...")
-    logger.info("Features: AI Summaries + Tiny URLs + Scrollable Time Picker")
+    logger.info("Pet Industry News Bot v4.0 — Starting up...")
+    logger.info("Features: Real Article Summaries + Tiny URLs")
     logger.info("━" * 50)
 
     init_db()
@@ -1231,11 +1261,11 @@ if __name__ == "__main__":
     try:
         bot.send_message(
             ADMIN_CHAT_ID,
-            f"🟢 <b>Pet News Bot v3.0 is LIVE!</b> 🐾\n\n"
-            f"✅ AI-generated summaries\n"
+            f"🟢 <b>Pet News Bot v4.0 is LIVE!</b> 🐾\n\n"
+            f"✅ Real article summaries (reads full articles)\n"
+            f"✅ 3-4 line AI summaries\n"
             f"✅ Tiny URLs (is.gd)\n"
-            f"✅ Scrollable time picker\n"
-            f"✅ 3-day fresh news filter\n\n"
+            f"✅ Scrollable time picker\n\n"
             f"<i>Use /adminstats for dashboard</i>",
             parse_mode="HTML"
         )
