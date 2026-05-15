@@ -1,7 +1,18 @@
-pyTelegramBotAPI
-Flask
-feedparser
-pytz
-APScheduler
-requests
-gunicorn
+# ═══════════════════════════════════════════════════════════════
+# 📦 Pet Industry News Bot — Python Dependencies
+# ═══════════════════════════════════════════════════════════════
+
+# Telegram Bot API wrapper
+pyTelegramBotAPI==4.20.0
+
+# Background job scheduler (cron-like)
+APScheduler==3.10.4
+
+# RSS feed parser for Google News
+feedparser==6.0.11
+
+# Timezone handling
+pytz==2024.1
+
+# Flask web server (keep-alive for Render)
+Flask==3.0.3
