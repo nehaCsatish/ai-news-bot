@@ -1,14 +1,14 @@
 # ═══════════════════════════════════════════════════════════════
-# 📦 Pet Industry News Bot — Python Dependencies
+# 📦 Pet Industry News Bot — Python Dependencies (v4.0)
 # ═══════════════════════════════════════════════════════════════
 
 # Telegram Bot API wrapper
 pyTelegramBotAPI==4.20.0
 
-# Background job scheduler (cron-like)
+# Background job scheduler
 APScheduler==3.10.4
 
-# RSS feed parser for Google News
+# RSS feed parser
 feedparser==6.0.11
 
 # Timezone handling
@@ -16,3 +16,9 @@ pytz==2024.1
 
 # Flask web server (keep-alive for Render)
 Flask==3.0.3
+
+# Article text extraction (for real summaries)
+newspaper3k==0.2.8
+
+# Alternative article extraction (fallback)
+trafilatura==1.12.2
