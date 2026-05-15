@@ -255,25 +255,29 @@ def shorten_url(long_url):
 # 🤖 AI SUMMARY GENERATOR
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def generate_summary(title, description, max_sentences=3):
+def generate_summary(title, description, max_sentences=2):
     """
-    Generate a detailed AI-like summary from title + description.
-    Uses extractive summarization with smart sentence scoring.
+    Generate a meaningful summary from title + description.
+    If description is empty/too short, creates an informative context summary.
     """
-    text = f"{title}. {description}"
-    text = clean_text(text)
+    title = clean_text(title)
+    description = clean_text(description)
 
-    if not text:
-        return "Latest update from the pet industry with key insights for pet owners and professionals."
+    # If description is basically empty or just repeats title, create context summary
+    if not description or len(description) < 30 or description.lower() in title.lower() or title.lower() in description.lower():
+        return _generate_context_summary(title)
+
+    # Use description only (ignore title to avoid repetition)
+    text = description
 
     # Split into sentences
     sentences = re.split(r'(?<=[.!?])\s+', text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 25]
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
 
-    if not sentences:
-        return text[:200] + "..." if len(text) > 200 else text
+    if not sentences or len(sentences) == 0:
+        return _generate_context_summary(title)
 
-    # Expanded pet industry keywords for better relevance scoring
+    # Score sentences for informativeness
     pet_keywords = [
         'pet', 'dog', 'cat', 'animal', 'veterinary', 'vet', 'food', 'health',
         'care', 'startup', 'technology', 'industry', 'market', 'trend',
@@ -284,63 +288,121 @@ def generate_summary(title, description, max_sentences=3):
         'pharmaceutical', 'vaccine', 'therapy', 'surgery', 'diagnosis',
         'organic', 'natural', 'premium', 'luxury', 'subscription',
         'e-commerce', 'retail', 'clinic', 'hospital', 'service',
-        'regulation', 'policy', 'legislation', 'welfare', 'rights'
+        'regulation', 'policy', 'legislation', 'welfare', 'rights',
+        'university', 'college', 'researchers', 'scientists', 'professor',
+        'facility', 'unit', 'center', 'program', 'initiative'
     ]
 
     def score_sentence(sent):
         sent_lower = sent.lower()
         score = 0
+        # Keyword relevance
         for kw in pet_keywords:
             if kw in sent_lower:
                 score += 1
-        # Strongly prefer sentences with numbers/statistics
+        # Prefer sentences with numbers/statistics
         if re.search(r'\d+%', sent):
             score += 3
         if re.search(r'\$\d+|\d+ million|\d+ billion|\d+ thousand', sent):
             score += 3
-        if re.search(r'\d{4}', sent):  # Years
-            score += 1
-        # Prefer actionable/insightful sentences
-        if any(word in sent_lower for word in ['launch', 'announce', 'reveal', 'introduce', 'new']):
+        # Prefer informative over generic
+        if any(word in sent_lower for word in ['because', 'according', 'found', 'shows', 'reveals', 'discovered']):
             score += 2
-        # Penalize very short or very long sentences
+        # Penalize very short or generic sentences
         if len(sent) < 40:
+            score -= 2
+        if len(sent) > 300:
             score -= 1
-        if len(sent) > 280:
-            score -= 1
+        # Penalize sentences that are too similar to title
+        title_words = set(title.lower().split())
+        sent_words = set(sent.lower().split())
+        if len(title_words) > 0:
+            overlap = len(title_words & sent_words) / len(title_words)
+            if overlap > 0.7:
+                score -= 5  # Heavy penalty for title repetition
         return score
 
     scored = [(s, score_sentence(s)) for s in sentences]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    # Pick top sentences, ensuring diversity (not too similar)
+    # Pick best sentence(s)
     selected = []
     for s, score in scored:
         if len(selected) >= max_sentences:
             break
+        if score < -2:  # Skip very low quality sentences
+            continue
         # Check not too similar to already selected
         is_duplicate = False
         for existing in selected:
-            # Simple similarity: share 60%+ words
             words_s = set(s.lower().split())
             words_e = set(existing.lower().split())
             if len(words_s) > 0 and len(words_e) > 0:
                 overlap = len(words_s & words_e) / min(len(words_s), len(words_e))
-                if overlap > 0.6:
+                if overlap > 0.5:
                     is_duplicate = True
                     break
         if not is_duplicate:
             selected.append(s)
 
-    # Sort back by original order for coherence
+    if not selected:
+        return _generate_context_summary(title)
+
+    # Sort back by original order
     selected.sort(key=lambda x: sentences.index(x))
 
     summary = ' '.join(selected)
-
-    # Clean up
     summary = re.sub(r'\s+', ' ', summary).strip()
-    if len(summary) > 350:
-        summary = summary[:347] + "..."
+
+    if len(summary) > 280:
+        summary = summary[:277] + "..."
+
+    return summary
+
+
+def _generate_context_summary(title):
+    """
+    When no description is available, generate an informative context summary
+    based on keywords extracted from the title.
+    """
+    title_lower = title.lower()
+
+    # Extract key entities from title
+    context_parts = []
+
+    # Check for specific topics and add context
+    if any(word in title_lower for word in ['veterinary', 'vet', 'medicine', 'hospital', 'clinic']):
+        context_parts.append("This development could impact veterinary care standards and animal health outcomes.")
+
+    if any(word in title_lower for word in ['food', 'nutrition', 'diet', 'feed']):
+        context_parts.append("Pet nutrition trends directly affect millions of pet owners' purchasing decisions.")
+
+    if any(word in title_lower for word in ['startup', 'funding', 'investment', 'million', 'billion']):
+        context_parts.append("The pet industry continues to attract significant investor interest and capital.")
+
+    if any(word in title_lower for word in ['technology', 'tech', 'app', 'ai', 'digital', 'smart']):
+        context_parts.append("Pet technology innovations are transforming how owners care for their animals.")
+
+    if any(word in title_lower for word in ['research', 'study', 'university', 'scientists', 'professor']):
+        context_parts.append("Academic research in this area contributes to advancing pet health knowledge.")
+
+    if any(word in title_lower for word in ['rescue', 'shelter', 'adoption', 'welfare']):
+        context_parts.append("Animal welfare developments affect policy and rescue operations nationwide.")
+
+    if any(word in title_lower for word in ['trend', 'market', 'growth', 'industry']):
+        context_parts.append("Market trends in the pet sector reflect changing consumer preferences and opportunities.")
+
+    if any(word in title_lower for word in ['dog', 'puppy', 'canine']):
+        context_parts.append("Dog-related news remains the largest segment of the pet industry market.")
+
+    if any(word in title_lower for word in ['cat', 'kitten', 'feline']):
+        context_parts.append("Cat care innovations continue to drive growth in feline health and wellness products.")
+
+    if not context_parts:
+        context_parts.append("This story highlights important developments in the pet industry landscape.")
+
+    # Pick the most relevant 1-2 context sentences
+    summary = ' '.join(context_parts[:2])
 
     return summary
 
